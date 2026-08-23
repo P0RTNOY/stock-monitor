@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+.venv*/
+__pycache__/
+*.py[cod]
+.DS_Store
+stock_forecast_journal.db
+*.db-journal
+*.db-shm
+*.db-wal

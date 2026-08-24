@@ -1,0 +1,142 @@
+[
+  {
+    "name": "bullish_no_change_before_horizon",
+    "direction": "bullish",
+    "cutoff": "2025-01-07T17:00:00Z",
+    "bars": [["2025-01-06", 100, 109, 95, 105]],
+    "expected": ["no_change", "horizon_not_complete"]
+  },
+  {
+    "name": "bullish_target_hit",
+    "direction": "bullish",
+    "bars": [["2025-01-06", 100, 110, 99, 108]],
+    "expected": ["target_hit", "target_boundary_touched"]
+  },
+  {
+    "name": "bullish_invalidated",
+    "direction": "bullish",
+    "bars": [["2025-01-06", 100, 104, 90, 94]],
+    "expected": ["invalidated", "invalidation_boundary_touched"]
+  },
+  {
+    "name": "bullish_expired",
+    "direction": "bullish",
+    "bars": [["2025-01-06", 100, 105, 95, 102], ["2025-01-07", 102, 106, 96, 103]],
+    "expected": ["expired", "horizon_complete_without_terminal_touch"]
+  },
+  {
+    "name": "bearish_no_change_before_horizon",
+    "direction": "bearish",
+    "cutoff": "2025-01-07T17:00:00Z",
+    "bars": [["2025-01-06", 100, 105, 91, 95]],
+    "expected": ["no_change", "horizon_not_complete"]
+  },
+  {
+    "name": "bearish_target_hit",
+    "direction": "bearish",
+    "bars": [["2025-01-06", 100, 101, 90, 92]],
+    "expected": ["target_hit", "target_boundary_touched"]
+  },
+  {
+    "name": "bearish_invalidated",
+    "direction": "bearish",
+    "bars": [["2025-01-06", 100, 110, 96, 108]],
+    "expected": ["invalidated", "invalidation_boundary_touched"]
+  },
+  {
+    "name": "bearish_expired",
+    "direction": "bearish",
+    "bars": [["2025-01-06", 100, 105, 95, 98], ["2025-01-07", 98, 104, 94, 97]],
+    "expected": ["expired", "horizon_complete_without_terminal_touch"]
+  },
+  {
+    "name": "bullish_exact_target_equality",
+    "direction": "bullish",
+    "bars": [["2025-01-06", 100, 110, 99, 105]],
+    "expected": ["target_hit", "target_boundary_touched"]
+  },
+  {
+    "name": "bullish_exact_invalidation_equality",
+    "direction": "bullish",
+    "bars": [["2025-01-06", 100, 105, 90, 95]],
+    "expected": ["invalidated", "invalidation_boundary_touched"]
+  },
+  {
+    "name": "bullish_range_lower_edge_entry",
+    "direction": "bullish",
+    "target_range": [110, 115],
+    "bars": [["2025-01-06", 100, 110, 99, 108]],
+    "expected": ["target_hit", "target_boundary_touched"]
+  },
+  {
+    "name": "bearish_range_upper_edge_entry",
+    "direction": "bearish",
+    "target_range": [85, 90],
+    "bars": [["2025-01-06", 100, 101, 90, 92]],
+    "expected": ["target_hit", "target_boundary_touched"]
+  },
+  {
+    "name": "one_cent_short_of_bullish_target",
+    "direction": "bullish",
+    "bars": [["2025-01-06", 100, 109.99, 95, 105], ["2025-01-07", 105, 109.99, 95, 106]],
+    "expected": ["expired", "horizon_complete_without_terminal_touch"]
+  },
+  {
+    "name": "one_cent_short_of_bullish_invalidation",
+    "direction": "bullish",
+    "bars": [["2025-01-06", 100, 105, 90.01, 95], ["2025-01-07", 95, 106, 90.01, 96]],
+    "expected": ["expired", "horizon_complete_without_terminal_touch"]
+  },
+  {
+    "name": "target_precedes_later_invalidation",
+    "direction": "bullish",
+    "bars": [["2025-01-06", 100, 111, 99, 109], ["2025-01-07", 95, 100, 89, 92]],
+    "expected": ["target_hit", "target_boundary_touched"]
+  },
+  {
+    "name": "invalidation_precedes_later_target",
+    "direction": "bullish",
+    "bars": [["2025-01-06", 100, 104, 89, 92], ["2025-01-07", 105, 111, 100, 109]],
+    "expected": ["invalidated", "invalidation_boundary_touched"]
+  },
+  {
+    "name": "same_bar_collision",
+    "direction": "bullish",
+    "bars": [["2025-01-06", 100, 111, 89, 100]],
+    "expected": ["needs_review", "same_bar_target_invalidation_collision"]
+  },
+  {
+    "name": "same_bar_collision_on_final_bar",
+    "direction": "bullish",
+    "bars": [["2025-01-06", 100, 105, 95, 100], ["2025-01-07", 100, 111, 89, 100]],
+    "expected": ["needs_review", "same_bar_target_invalidation_collision"]
+  },
+  {
+    "name": "gap_through_target_wins_opposite_wick",
+    "direction": "bullish",
+    "bars": [["2025-01-06", 111, 112, 89, 100]],
+    "expected": ["target_hit", "target_boundary_touched"],
+    "detected_at": "open"
+  },
+  {
+    "name": "gap_through_invalidation_wins_opposite_wick",
+    "direction": "bullish",
+    "bars": [["2025-01-06", 89, 111, 88, 100]],
+    "expected": ["invalidated", "invalidation_boundary_touched"],
+    "detected_at": "open"
+  },
+  {
+    "name": "bearish_gap_through_target_wins_opposite_wick",
+    "direction": "bearish",
+    "bars": [["2025-01-06", 89, 111, 88, 100]],
+    "expected": ["target_hit", "target_boundary_touched"],
+    "detected_at": "open"
+  },
+  {
+    "name": "bearish_gap_through_invalidation_wins_opposite_wick",
+    "direction": "bearish",
+    "bars": [["2025-01-06", 111, 112, 89, 100]],
+    "expected": ["invalidated", "invalidation_boundary_touched"],
+    "detected_at": "open"
+  }
+]

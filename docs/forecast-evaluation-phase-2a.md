@@ -178,12 +178,12 @@ npm run build
 
 The automated evaluator tests use fixtures and mocked provider boundaries. TypeScript persistence tests use an in-memory SQLite D1-compatible adapter. They do not call live Yahoo Finance, mutate a remote Cloudflare D1 database, or perform a browser-level end-to-end test.
 
-## Manual-only boundary and limitations
+## Phase 2A product boundary and Phase 2B coordination
 
-Phase 2A includes no scheduler, recurring monitor, background evaluator, due-forecast batch, email, push notification, webhook delivery, or alert delivery. Evaluation occurs only after explicit user confirmation for one active forecast.
+The Phase 2A browser workflow remains manual: evaluation occurs only after explicit user confirmation for one active forecast. Phase 2B adds a separate, non-public operator CLI that can coordinate a bounded page of due active forecasts. It calls this same Phase 2A service with an explicit frozen cutoff and does not duplicate evaluator, provider, fingerprint, concurrency, or lifecycle logic. It adds no application route, browser control, scheduler, recurring monitor, email, push notification, webhook, or alert delivery.
 
 It also does not include global accuracy dashboards, confidence-calibration analytics, a human outcome override, intraday collision resolution, split-level restatement, broad exchange-calendar coverage, broker integration, execution, personalized advice, AI-generated forecasts, full authentication, or multi-user isolation.
 
-Northstar still uses a fixed local profile resolver and is not safe for public multi-user deployment. The implementation and automated suites have not verified a remote Cloudflare D1 migration/runtime or browser end-to-end behavior. Local builds and in-memory contract tests are meaningful verification, but they are not substitutes for those deployment checks.
+Northstar still uses a fixed local profile resolver and is not safe for public multi-user deployment. The implementation and automated suites have not verified a remote Cloudflare D1 migration/runtime, deployed operator environment, live provider coordination, operating-system process-kill recovery, or browser end-to-end behavior. Local builds, in-memory contract tests, and injected crash-boundary tests are meaningful verification, but they are not substitutes for those deployment checks.
 
-The exact next slice is Phase 2B: a bounded, idempotent, operator-invoked due-forecast coordinator with injected time/provider dependencies and per-item failure isolation. It must be proven before adding any scheduler or delivery channel. See the [Phase 2 roadmap](phase-2-roadmap.md).
+The completed Phase 2B coordinator contract is documented in [`forecast-coordinator-phase-2b.md`](forecast-coordinator-phase-2b.md). The next slice is Phase 2C: production authentication and authorization, remote D1 and deployment verification, operational observability, scheduler invocation, retry cadence, and notification policy. A scheduler or delivery channel must not be attached before those boundaries are designed and verified. See the [Phase 2 roadmap](phase-2-roadmap.md).

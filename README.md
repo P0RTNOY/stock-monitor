@@ -14,6 +14,7 @@ This app is for personal journaling and reflection only. It is not financial adv
 - Forecast status and symbol filters with draft, active, and historical detail views
 - Manual deterministic evaluation against trusted completed daily bars
 - Durable outcome evidence and a Review Queue with append-only acknowledgement
+- Bounded, replay-safe due-forecast coordination through a non-public operator CLI
 - Date-aware forecast sheet that reloads previously saved entries
 - Per-date drafts that do not leak into another selected date
 - Atomic replace-by-date saving without silently removing historical symbols that left the watchlist
@@ -74,6 +75,16 @@ Then open [http://localhost:8501](http://localhost:8501). Use **Forecasts** to c
 
 The local Vite server proxies `/api/analysis`, and the Northstar server sends forecast-evaluation requests to the same loopback service without exposing its address to browser code. A hosted deployment requires `ANALYSIS_API_URL` to point to a separately deployed HTTPS analysis service; `127.0.0.1` is local-only.
 
+Phase 2B also provides the non-public `npm run forecast:coordinate` operator command under `market-monitor-web`. It resolves the fixed local profile internally, requires an explicit cutoff and mode, and can produce human-readable or machine-readable reports. It is not an application route or browser control. Execute mode uses the same trusted Python evaluation service as **Evaluate now**, so the local Python service must be running; consult the [Phase 2B coordinator contract](docs/forecast-coordinator-phase-2b.md) before invoking it.
+
+```bash
+cd market-monitor-web
+npm run forecast:coordinate -- --help
+npm run forecast:coordinate -- --cutoff 2026-08-24T12:00:00.000Z --mode dry_run --limit 25
+```
+
+Use `npm run --silent forecast:coordinate -- ... --json` when stdout must contain only JSON. Execute and cursor/replay examples, local D1 persistence details, and the `ANALYSIS_API_URL` requirement are documented in the Phase 2B contract.
+
 Northstar does not seed or display demo holdings, watchlists, prices, or chart histories. Portfolio and forecast records come from its D1 database; quote and chart values are requested from the configured real-market provider only for tracked symbols. A forecast may reference only a position or watchlist symbol owned by the resolved profile. The watchlist ticker field searches the live provider directory after two characters and supports keyboard selection; save requests revalidate the exact symbol and use the provider's canonical company name instead of trusting browser-supplied metadata. Stock and ETF market values are accepted only when the provider currency matches the profile currency, so raw prices in different currencies are never silently added together. The local and hosted analysis boundaries likewise reject untracked symbols. A new database starts with an empty portfolio and zero cash. If the database or provider is unavailable, the interface shows an explicit unavailable state instead of substituting sample data, average cost, or a synthetic chart. The one-time `legacy-demo-cleanup-v1` migration runs only after matching the complete legacy seed fingerprint and removes only the exact demo rows created by older Northstar builds.
 
 Northstar currently uses a centralized fixed-profile resolver, not user authentication. This is a migration seam for future authenticated IDs, but the application is not multi-user safe and must not be exposed as a public multi-tenant service until authentication and tenant isolation are implemented. See [`docs/forecast-phase-1.md`](docs/forecast-phase-1.md) for the lifecycle, API, integrity rules, local workflow, and deployment boundary.
@@ -133,7 +144,9 @@ A Northstar forecast moves through `draft`, `active`, and a terminal state. Draf
 
 Phase 2A adds an explicit **Evaluate now** action for one active forecast. Northstar fetches trusted completed daily bars on the server, applies a frozen versioned ruleset, and stores the evidence-backed result. Proven `target_hit`, `invalidated`, or `expired` outcomes close the forecast atomically. `no_change` leaves it active, while ambiguous or insufficient evidence produces `needs_review` and a durable Review Queue item. Acknowledgement records review only; it cannot override the evaluator.
 
-The Phase 1 domain and activation contract are documented in [`docs/forecast-phase-1.md`](docs/forecast-phase-1.md). Phase 2A architecture, rules, API, Review Queue, and limitations are in [`docs/forecast-evaluation-phase-2a.md`](docs/forecast-evaluation-phase-2a.md); the normative decision policy is [`docs/forecast-evaluation-ruleset-v1.md`](docs/forecast-evaluation-ruleset-v1.md). Follow-up work is sequenced in [`docs/phase-2-roadmap.md`](docs/phase-2-roadmap.md).
+Phase 2B adds bounded operator coordination for active forecasts that may have new completed information. It uses stable keyset pagination, frozen cutoffs, per-forecast claims, persisted progress, and isolated outcome reports while continuing to delegate every forecast decision and lifecycle mutation to Phase 2A. Dry-run previews the same due set without provider calls or forecast-domain mutations. There is no public batch endpoint, browser automation control, scheduler, or notification channel.
+
+The Phase 1 domain and activation contract are documented in [`docs/forecast-phase-1.md`](docs/forecast-phase-1.md). Phase 2A architecture, rules, API, Review Queue, and limitations are in [`docs/forecast-evaluation-phase-2a.md`](docs/forecast-evaluation-phase-2a.md); the normative decision policy is [`docs/forecast-evaluation-ruleset-v1.md`](docs/forecast-evaluation-ruleset-v1.md). The frozen Phase 2B coordinator contract is [`docs/forecast-coordinator-phase-2b.md`](docs/forecast-coordinator-phase-2b.md), and follow-up work is sequenced in [`docs/phase-2-roadmap.md`](docs/phase-2-roadmap.md).
 
 ## How Saving Works
 
@@ -147,7 +160,7 @@ The recorded price of an existing entry is preserved when the entry is edited. A
 
 - Journal data is stored locally in `stock_forecast_journal.db`.
 - The database, `.env`, virtual environments, and SQLite sidecar files are ignored by Git.
-- Price, chart, symbol-search, technical-analysis, and manual forecast-evaluation requests send stock symbols or search text to Yahoo Finance. Evaluation additionally requests a bounded raw daily-history range and market metadata.
+- Price, chart, symbol-search, technical-analysis, and forecast-evaluation requests send stock symbols or search text to Yahoo Finance. Manual and operator-coordinated evaluation additionally request a bounded raw daily-history range and market metadata.
 - Headline requests send the selected symbol or company name to Google News.
 - Journal text is sent to OpenAI only after `Generate AI Summary` or `Review Forecast Habits` is clicked. Requests are capped at 60 entries and 30,000 characters, delimit journal content as untrusted data, and ask only for reflection—not trading instructions.
 - Automated tests never make a live OpenAI request.
@@ -170,7 +183,7 @@ Run the full suite from the project folder:
 python -m unittest discover -v
 ```
 
-The suite uses temporary databases, frozen evaluator fixtures, and mocked network providers. It covers persistence transactions, date-aware Streamlit behavior, journal validation, trigger evaluation, export safety, AI request construction, market/news adapters, technical indicators, normalized OHLCV contracts, no-look-ahead pivots, structural trend classification, deterministic analysis reports, completed-bar availability, exchange-session coverage, touch/collision/gap precedence, corporate actions, currency handling, fingerprints, and evaluation service errors. Northstar tests additionally cover forecast migrations and repeatable initialization, validation, lifecycle transitions, ownership, activation quote capture, immutable analysis snapshots, evaluation atomicity/idempotency, Review Queue acknowledgement, API errors, filtering, and presentation helpers. Tests do not require live Yahoo Finance or OpenAI access.
+The suite uses temporary databases, frozen evaluator fixtures, and mocked network providers. It covers persistence transactions, date-aware Streamlit behavior, journal validation, trigger evaluation, export safety, AI request construction, market/news adapters, technical indicators, normalized OHLCV contracts, no-look-ahead pivots, structural trend classification, deterministic analysis reports, completed-bar availability, exchange-session coverage, touch/collision/gap precedence, corporate actions, currency handling, fingerprints, and evaluation service errors. Northstar tests additionally cover forecast migrations and repeatable initialization, validation, lifecycle transitions, ownership, activation quote capture, immutable analysis snapshots, evaluation atomicity/idempotency, Review Queue acknowledgement, coordinator due selection, cursors, dry-run, claims, replay and resume, operator reports, API errors, filtering, and presentation helpers. Tests do not require live Yahoo Finance or OpenAI access.
 
 Northstar frontend checks run from its project directory:
 
@@ -200,4 +213,4 @@ Review reminders, market data, technical indicators, headlines, and AI summaries
 
 Forecasts follow the same boundary: Northstar records and later reviews the user's prediction; it does not generate a forecast or recommend a position.
 
-Phase 2A evaluation remains manual. There is no scheduler, email or push delivery, global accuracy dashboard, authentication, or multi-user isolation. The automated verification does not exercise a remote Cloudflare D1 database or a browser-level end-to-end flow.
+Phase 2A remains the manual browser workflow, while Phase 2B coordination is available only through the local operator CLI. There is no scheduler, email, push, webhook delivery, global accuracy dashboard, authentication, or multi-user isolation. Automated verification does not exercise a remote Cloudflare D1 database, a deployed operator environment, operating-system process-kill recovery, live provider coordination, or a browser-level end-to-end flow.

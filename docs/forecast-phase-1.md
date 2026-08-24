@@ -2,7 +2,7 @@
 
 Northstar Forecasts turns a free-text market note into a structured prediction that can eventually be evaluated. A forecast records what the user expected, the evidence available at the time, what would invalidate the idea, and when it should be reviewed. It remains a journaling and accountability tool: Northstar does not create forecasts, recommend trades, or execute orders.
 
-This document describes the immutable Phase 1 foundation. Phase 2A now adds explicit, manual completed-bar evaluation without changing that activation contract. See [`forecast-evaluation-phase-2a.md`](forecast-evaluation-phase-2a.md).
+This document describes the immutable Phase 1 foundation. Phase 2A adds deterministic completed-bar evaluation without changing that activation contract, and Phase 2B safely coordinates due active forecasts without changing the evaluator. See [`forecast-evaluation-phase-2a.md`](forecast-evaluation-phase-2a.md) and [`forecast-coordinator-phase-2b.md`](forecast-coordinator-phase-2b.md).
 
 ## Domain model
 
@@ -48,7 +48,7 @@ Phase 1 implements these user-driven transitions:
 - **Cancel active forecast:** close an active forecast with a required reason. Cancellation is not a correctness judgment.
 - **Add amendment or review note:** add context without changing the activated forecast.
 
-No Phase 1 process marks a forecast `target_hit`, `invalidated`, or `expired`. The manual Phase 2A evaluator can now write those terminal states from trusted completed-bar evidence. It preserves the same immutable activated record and appends a versioned evaluation run and audit event.
+No Phase 1 process marks a forecast `target_hit`, `invalidated`, or `expired`. The Phase 2A evaluator can write those terminal states from trusted completed-bar evidence, either after the manual one-forecast action or when invoked by the Phase 2B operator coordinator. It preserves the same immutable activated record and appends a versioned evaluation run and audit event.
 
 Unsupported transitions fail on the server. An active forecast cannot return to draft, be deleted, or have its original fields replaced.
 
@@ -158,4 +158,4 @@ The Phase 1 foundation itself does not include:
 - broker integration, order execution, personalized financial advice, or AI-generated forecasts;
 - full authentication, billing, collaboration, backtesting, or a replacement charting system.
 
-Those evaluation contracts now exist in Phase 2A, but evaluation remains an explicit one-forecast action. Background scheduling, delivery, global analytics, authentication, and multi-user isolation remain absent. See the [Phase 2A evaluation guide](forecast-evaluation-phase-2a.md) and [Phase 2 roadmap](phase-2-roadmap.md).
+Those evaluation contracts now exist in Phase 2A. Phase 2B adds a bounded, replay-safe, operator-invoked due-forecast coordinator, but does not add a public endpoint, browser automation control, scheduler, or notification delivery. Global analytics, authentication, production deployment verification, and multi-user isolation remain absent. See the [Phase 2A evaluation guide](forecast-evaluation-phase-2a.md), [Phase 2B coordinator contract](forecast-coordinator-phase-2b.md), and [Phase 2 roadmap](phase-2-roadmap.md).

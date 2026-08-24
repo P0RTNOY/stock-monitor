@@ -1,11 +1,17 @@
 # Stock Forecast Journal
 
-Stock Forecast Journal is a local-first Streamlit app for recording and reviewing personal daily stock forecasts. It starts with the Magnificent 7, supports an editable watchlist, adds market/news context, and stores journal data in a local SQLite file.
+Stock Forecast Journal contains Northstar, the primary D1-backed portfolio and structured-forecast workspace, and the original local-first Streamlit journal. Northstar now treats a measurable `Forecast` as a first-class product object while preserving portfolio, watchlist, alert, market-data, journal, and completed-bar technical-analysis workflows.
 
 This app is for personal journaling and reflection only. It is not financial advice, trading advice, or an automated trading system.
 
 ## Features
 
+- Structured Northstar forecast drafts for tracked position and watchlist symbols
+- Explicit forecast activation that captures a fresh server-verified quote and freezes the original prediction
+- Point or range targets, invalidation, confidence, horizon, supporting evidence, and counter-evidence
+- Append-only forecast events, amendments, and review notes
+- Immutable technical-analysis snapshots linked at activation
+- Forecast status and symbol filters with draft, active, and historical detail views
 - Date-aware forecast sheet that reloads previously saved entries
 - Per-date drafts that do not leak into another selected date
 - Atomic replace-by-date saving without silently removing historical symbols that left the watchlist
@@ -62,11 +68,13 @@ Northstar is the current portfolio and market-monitoring frontend. Its local lau
 ./scripts/run-northstar-local.sh
 ```
 
-Then open [http://localhost:8501](http://localhost:8501), choose **Markets**, select a tracked stock, and use **Completed-bar analysis**. Analysis runs only after the explicit button click. Reports are kept per symbol in the current browser session; a failed refresh leaves the last good report visible.
+Then open [http://localhost:8501](http://localhost:8501). Use **Forecasts** to create a structured draft for a tracked symbol, review it, and explicitly activate it. Activation requires a fresh server-side market quote and freezes the prediction for honest later review. Use **Markets** to run completed-bar analysis for a tracked stock; when a qualifying scenario exists, **Create forecast from this scenario** prefills defensible fields for the user to review. Analysis still runs only after an explicit click, and a failed refresh leaves the last good browser report visible.
 
 The local Vite server proxies `/api/analysis` to the loopback service without exposing its address to browser code. A hosted deployment requires `ANALYSIS_API_URL` to point to a separately deployed HTTPS analysis service; `127.0.0.1` is local-only.
 
-Northstar does not seed or display demo holdings, watchlists, prices, or chart histories. Portfolio records come from its D1 database; quote and chart values are requested from the configured real-market provider only for symbols already saved as a position, watchlist item, or alert. The watchlist ticker field searches the live provider directory after two characters and supports keyboard selection; save requests revalidate the exact symbol and use the provider's canonical company name instead of trusting browser-supplied metadata. Stock and ETF market values are accepted only when the provider currency matches the profile currency, so raw prices in different currencies are never silently added together. The local and hosted analysis boundaries likewise reject symbols that are not saved in the position or watchlist database. A new database starts with an empty portfolio and zero cash. If the database or provider is unavailable, the interface shows an explicit unavailable state instead of substituting sample data, average cost, or a synthetic chart. The one-time `legacy-demo-cleanup-v1` migration runs only after matching the complete legacy seed fingerprint and removes only the exact demo rows created by older Northstar builds.
+Northstar does not seed or display demo holdings, watchlists, prices, or chart histories. Portfolio and forecast records come from its D1 database; quote and chart values are requested from the configured real-market provider only for tracked symbols. A forecast may reference only a position or watchlist symbol owned by the resolved profile. The watchlist ticker field searches the live provider directory after two characters and supports keyboard selection; save requests revalidate the exact symbol and use the provider's canonical company name instead of trusting browser-supplied metadata. Stock and ETF market values are accepted only when the provider currency matches the profile currency, so raw prices in different currencies are never silently added together. The local and hosted analysis boundaries likewise reject untracked symbols. A new database starts with an empty portfolio and zero cash. If the database or provider is unavailable, the interface shows an explicit unavailable state instead of substituting sample data, average cost, or a synthetic chart. The one-time `legacy-demo-cleanup-v1` migration runs only after matching the complete legacy seed fingerprint and removes only the exact demo rows created by older Northstar builds.
+
+Northstar currently uses a centralized fixed-profile resolver, not user authentication. This is a migration seam for future authenticated IDs, but the application is not multi-user safe and must not be exposed as a public multi-tenant service until authentication and tenant isolation are implemented. See [`docs/forecast-phase-1.md`](docs/forecast-phase-1.md) for the lifecycle, API, integrity rules, local workflow, and deployment boundary.
 
 ## Run the legacy journal
 
@@ -115,7 +123,13 @@ report = analyze_symbol("AAPL", datetime.now(timezone.utc))
 print(report.to_dict())
 ```
 
-The frozen assumptions and limitations are documented in [`docs/technical-analysis-ruleset-v1.md`](docs/technical-analysis-ruleset-v1.md). In Northstar, select a stock under **Markets**, provide optional risk assumptions in **Completed-bar analysis**, and click **Analyze completed bars**. Position sizing appears only for an active confirmed/retest scenario when risk budget, execution stop, commission, and slippage are all explicitly supplied; zero cost is allowed. Reports are retained in the current browser session per symbol; database persistence is a later phase. The legacy Streamlit journal retains a separate Scenario Analysis tab.
+The frozen assumptions and limitations are documented in [`docs/technical-analysis-ruleset-v1.md`](docs/technical-analysis-ruleset-v1.md). In Northstar, select a stock under **Markets**, provide optional risk assumptions in **Completed-bar analysis**, and click **Analyze completed bars**. Position sizing appears only for an active confirmed/retest scenario when risk budget, execution stop, commission, and slippage are all explicitly supplied; zero cost is allowed. Reports are retained in the current browser session per symbol. Creating a forecast from a valid scenario persists the bounded source report with its draft so the link survives a reload; activation validates it again and materializes the immutable forecast analysis snapshot. Later analysis refreshes cannot rewrite it. The legacy Streamlit journal retains a separate Scenario Analysis tab.
+
+## Structured Forecasts
+
+A Northstar forecast moves through `draft`, `active`, and, when explicitly cancelled with a reason, `cancelled`. The schema also reserves `target_hit`, `invalidated`, and `expired`, but Phase 1 does not automatically evaluate or grade forecasts. Drafts are editable and deletable. Activation captures fresh server market data and locks the thesis, evidence, confidence, target, horizon, invalidation, quote, and any technical-analysis snapshot. Later amendments and review notes are append-only and do not alter that original record.
+
+The complete domain, REST API, lifecycle, local test flow, and current limitations are documented in [`docs/forecast-phase-1.md`](docs/forecast-phase-1.md). The intentionally deferred evaluator and follow-up sequence are in [`docs/phase-2-roadmap.md`](docs/phase-2-roadmap.md).
 
 ## How Saving Works
 
@@ -152,7 +166,7 @@ Run the full suite from the project folder:
 python -m unittest discover -v
 ```
 
-The suite uses temporary databases and mocked network providers. It covers persistence transactions, date-aware Streamlit behavior, journal validation, trigger evaluation, export safety, AI request construction, market/news adapters, technical indicators, normalized OHLCV contracts, no-look-ahead pivots, structural trend classification, and deterministic analysis reports.
+The suite uses temporary databases and mocked network providers. It covers persistence transactions, date-aware Streamlit behavior, journal validation, trigger evaluation, export safety, AI request construction, market/news adapters, technical indicators, normalized OHLCV contracts, no-look-ahead pivots, structural trend classification, and deterministic analysis reports. Northstar tests additionally cover forecast migrations and repeatable initialization, validation, lifecycle transitions, ownership, activation quote capture, immutable analysis snapshots, API errors, filtering, and presentation helpers. Tests do not require live Yahoo Finance or OpenAI access.
 
 Northstar frontend checks run from its project directory:
 
@@ -178,3 +192,5 @@ python -m compileall -q app.py ai.py analysis db.py finance.py indicators.py jou
 - **`urllib3` reports LibreSSL on macOS:** use Python 3.11+ from a current distribution rather than Apple’s legacy system Python. The `.venv312` environment in this workspace avoids that warning.
 
 Review reminders, market data, technical indicators, headlines, and AI summaries are context for the user’s own journal. They are not buy, sell, hold, or trade recommendations.
+
+Forecasts follow the same boundary: Northstar records and later reviews the user's prediction; it does not generate a forecast or recommend a position.

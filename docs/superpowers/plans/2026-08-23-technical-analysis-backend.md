@@ -1,6 +1,6 @@
 # Technical Analysis Backend Implementation Plan
 
-**Status:** Phases 0–4 and the visible panel portion of Phase 5 implemented by 2026-08-24. SQLite analysis persistence, journal linkage, HTTP/Northstar integration, research validation, and later patterns remain planned.
+**Status:** Historical implementation plan. Phases 0–4, the local/HTTP Northstar integration, and the visible panels are implemented. Northstar now persists an immutable D1 analysis snapshot only when a user activates a linked structured forecast; legacy SQLite analysis persistence, general journal linkage, research validation, and later patterns remain planned. See [`forecast-phase-1.md`](../../forecast-phase-1.md) for the current forecast contract.
 
 **Goal:** Add a deterministic, explainable backend that converts complete OHLCV market data into structured technical-analysis scenarios, evidence, invalidation conditions, and hypothetical risk calculations. It must support the local Streamlit journal and the hosted Northstar frontend without producing automatic trade recommendations or placing orders.
 

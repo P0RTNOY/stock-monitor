@@ -437,6 +437,68 @@ input::placeholder, textarea::placeholder { color: #a2aaa6; }
 .activation-snapshot-copy { padding: 10px 12px; border-radius: 8px; background: #f8faef; }
 .modal .dialog-copy + label { margin-top: 15px; }
 
+.forecast-review-queue { margin-bottom: 18px; padding: 20px; }
+.review-queue-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
+.review-queue-heading h2 { margin: 0; font: 500 25px/1.15 Georgia, serif; }
+.review-queue-heading > div:first-child > p:last-child { max-width: 680px; margin: 7px 0 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
+.review-queue-heading > div:last-child { display: flex; align-items: flex-end; gap: 9px; }
+.review-queue-heading label { min-width: 190px; }
+.review-queue-heading label span { font-size: 8px; text-transform: uppercase; }
+.review-queue-heading .secondary-button { min-height: 40px; white-space: nowrap; }
+.review-queue-state { min-height: 92px; margin-top: 17px; padding: 22px; display: grid; place-items: center; align-content: center; gap: 5px; border: 1px dashed #d7ddda; border-radius: 12px; background: #fafbf9; color: var(--muted); font-size: 10px; text-align: center; }
+.review-queue-state strong { color: var(--ink); font: 500 16px Georgia, serif; }
+.review-sections { margin-top: 20px; display: grid; gap: 22px; }
+.review-section-heading { margin-bottom: 10px; padding: 0 3px; display: flex; align-items: end; justify-content: space-between; }
+.review-section-heading h3 { margin: 0; font: 500 19px/1.2 Georgia, serif; }
+.review-section-heading p { margin: 3px 0 0; color: var(--muted); font-size: 9px; }
+.review-section-heading > span { min-width: 25px; height: 25px; padding: 0 7px; display: grid; place-items: center; border-radius: 99px; background: #e7ebe8; color: var(--muted); font-size: 9px; font-weight: 800; }
+.review-card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.review-card { min-width: 0; padding: 17px; border: 1px solid #dce2df; border-left-width: 4px; border-radius: 12px; background: white; }
+.review-card.proven { border-left-color: #79972c; }
+.review-card.attention { border-left-color: #b18a38; background: #fffdf8; }
+.review-card.pending { border-left-color: #84969e; }
+.review-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.review-card > header > div { min-width: 0; }
+.review-card h4 { margin: 7px 0 0; font: 500 17px/1.25 Georgia, serif; }
+.review-card > header p { margin: 6px 0 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.review-result { display: inline-flex; padding: 5px 7px; border-radius: 6px; background: #edf3e3; color: #5c721e; font-size: 7px; font-weight: 850; letter-spacing: .06em; text-transform: uppercase; }
+.review-result.attention { background: #f6eed9; color: #85651e; }
+.review-result.pending { background: #ebf0f2; color: #5d737c; }
+.review-explanation { margin-top: 12px; padding: 11px 12px; border-radius: 8px; background: #f7f9f6; }
+.review-card.attention .review-explanation { background: #fbf5e9; }
+.review-explanation strong { font-size: 9px; }
+.review-explanation p { margin: 4px 0 0; color: #4e5955; font-size: 9px; line-height: 1.5; }
+.review-facts { margin: 9px 0 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
+.review-facts > div { min-width: 0; padding: 8px; border: 1px solid #e7ebe8; border-radius: 7px; background: #fbfcfa; }
+.review-facts dt, .review-trigger dt { color: var(--muted); font-size: 6px; font-weight: 850; letter-spacing: .05em; text-transform: uppercase; }
+.review-facts dd, .review-trigger dd { margin: 3px 0 0; overflow: hidden; font-size: 8px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+.review-trigger { margin-top: 9px; padding: 11px; border: 1px solid #dfe5e1; border-radius: 9px; background: #f9faf8; }
+.review-trigger > div { display: flex; justify-content: space-between; gap: 10px; }
+.review-trigger > div strong { font-size: 9px; }
+.review-trigger > div span { color: var(--muted); font-size: 8px; text-align: right; }
+.review-trigger dl { margin: 9px 0 0; display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.review-trigger dl > div { padding-top: 7px; border-top: 1px solid #e4e8e5; }
+.review-warnings { margin-top: 9px; border: 1px solid #e5dbc4; border-radius: 8px; background: #fffaf0; }
+.review-warnings summary { padding: 9px 11px; color: #735b28; cursor: pointer; font-size: 8px; font-weight: 800; }
+.review-warnings ul { margin: 0; padding: 0 25px 11px; color: #665b43; font-size: 8px; line-height: 1.55; }
+.review-card > footer { margin-top: 12px; padding-top: 10px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid #e8ece9; }
+.review-card > footer > div { display: flex; flex-wrap: wrap; gap: 10px; }
+.link-button { padding: 0; border: 0; background: transparent; color: var(--forest); cursor: pointer; font-size: 8px; font-weight: 800; text-decoration: underline; text-underline-offset: 2px; }
+.review-card > footer .secondary-button { min-height: 30px; padding-inline: 10px; font-size: 8px; white-space: nowrap; }
+.review-acknowledged { color: var(--muted); font-size: 8px; }
+.review-ack-dialog .freeze-callout, .evaluation-dialog .freeze-callout { margin: 0; }
+.review-ack-dialog .activation-summary dd { white-space: normal; text-transform: none; }
+
+.evaluation-state { margin-top: 10px; padding: 12px 14px; border: 1px solid #dce2df; border-radius: 10px; background: #f7f9f8; }
+.evaluation-state strong { font-size: 10px; }
+.evaluation-state p { margin: 4px 0 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.evaluation-state small { margin-top: 5px; display: block; color: var(--muted); font-size: 8px; }
+.evaluation-state.running { border-color: #cddaad; background: #f8faef; }
+.evaluation-state.proven { border-color: #bfd09e; background: #f5f9ec; }
+.evaluation-state.attention { border-color: #e4d3aa; background: #fffaf0; }
+.evaluation-state.provider-unavailable, .evaluation-state.error { border-color: #e8c7c7; background: #fff7f6; }
+.evaluation-state.provider-unavailable strong, .evaluation-state.error strong { color: #8a3e43; }
+
 @media (max-width: 1100px) {
   .stat-grid { grid-template-columns: repeat(2, 1fr); }
   .market-layout { grid-template-columns: 1fr; }
@@ -447,6 +509,7 @@ input::placeholder, textarea::placeholder { color: #a2aaa6; }
   .analysis-form .primary-small { grid-column: 1 / -1; }
   .forecast-master-detail { grid-template-columns: minmax(290px, .62fr) minmax(0, 1.38fr); }
   .forecast-metric-grid, .snapshot-geometry { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .review-card-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 930px) {
@@ -476,6 +539,9 @@ input::placeholder, textarea::placeholder { color: #a2aaa6; }
   .analysis-scenario-title { display: block; }
   .analysis-scenario-actions { margin-top: 12px; justify-content: flex-start; }
   .forecast-time-grid { grid-template-columns: 1fr; }
+  .review-queue-heading { display: block; }
+  .review-queue-heading > div:last-child { margin-top: 15px; }
+  .review-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 620px) {
@@ -524,6 +590,11 @@ input::placeholder, textarea::placeholder { color: #a2aaa6; }
   .forecast-detail { padding: 18px; }
   .forecast-detail-heading { display: block; }
   .forecast-detail-actions { margin-top: 15px; justify-content: flex-start; }
+  .forecast-review-queue { padding: 16px; }
+  .review-queue-heading > div:last-child { align-items: stretch; flex-direction: column; }
+  .review-queue-heading label { min-width: 0; }
+  .review-card > header, .review-card > footer { align-items: flex-start; flex-direction: column; }
+  .review-card > footer .secondary-button { width: 100%; }
   .form-grid.three { grid-template-columns: 1fr; }
   .forecast-composer { max-height: calc(100vh - 16px); }
   .forecast-composer .modal-heading { top: -22px; margin: -22px -22px 18px; padding: 20px 22px 16px; }
@@ -538,6 +609,9 @@ input::placeholder, textarea::placeholder { color: #a2aaa6; }
   .analysis-meta, .analysis-fact-grid, .analysis-scenario-grid, .analysis-risk dl { grid-template-columns: 1fr; }
   .forecast-metric-grid, .snapshot-geometry, .activation-summary { grid-template-columns: 1fr; }
   .forecast-card dl { grid-template-columns: 1fr; }
+  .review-facts, .review-trigger dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .review-trigger > div { flex-direction: column; }
+  .review-trigger > div span { text-align: left; }
 }
 
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }

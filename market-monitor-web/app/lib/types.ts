@@ -261,3 +261,72 @@ export type ForecastSeed = {
   analysisReport: TechnicalAnalysisReport;
   analysisScenarioId: string;
 };
+
+export type EvaluationKind = 'no_change' | 'target_hit' | 'invalidated' | 'expired' | 'needs_review';
+
+export type EvaluationObservation = {
+  symbol: string;
+  market_date: string;
+  timestamp: string;
+  completed_at: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  provider: string;
+  adjustment_mode: string;
+  corporate_action_flags: string[];
+};
+
+export type EvaluationEvidence = {
+  activation_cutoff: string;
+  activation_currency: string;
+  observed_currency: string | null;
+  observation_count: number;
+  first_eligible_observation: EvaluationObservation | null;
+  last_eligible_observation: EvaluationObservation | null;
+  triggering_observation: EvaluationObservation | null;
+  target_boundary: number | null;
+  target_range: [number, number] | null;
+  invalidation_boundary: number | null;
+  detected_at: 'open' | 'within_bar' | null;
+  observed_open: number | null;
+  crossed_boundary: number | null;
+  corporate_action_findings: string[];
+  coverage_findings: Record<string, unknown>;
+  warnings: string[];
+};
+
+export type EvaluationRun = {
+  id: number;
+  profileId: number;
+  forecastId: number;
+  resultKind: EvaluationKind;
+  reasonCode: string;
+  explanation: string;
+  evaluatorVersion: string;
+  rulesetVersion: string;
+  evaluatedThrough: string | null;
+  evaluationCutoff: string;
+  evidence: EvaluationEvidence;
+  warnings: string[];
+  inputFingerprint: string;
+  createdAt: string;
+};
+
+export type ForecastReviewItem = {
+  id: number;
+  profileId: number;
+  forecastId: number;
+  evaluationRunId: number;
+  reviewKind: 'resolved' | 'needs_review';
+  acknowledgedAt: string | null;
+  createdAt: string;
+  symbol: string;
+  forecastStatus: ForecastStatus;
+  target: ForecastTarget;
+  invalidationPrice: number | null;
+  analysisSnapshotId: number | null;
+  run: EvaluationRun;
+};

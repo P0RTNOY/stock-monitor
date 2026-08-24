@@ -2,6 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  createLatestRequestGate,
+  isEvaluationRun,
+  isForecastReviewItem,
+  type ReviewVisibility,
+} from '../lib/evaluation';
+import {
   filterForecasts,
   FORECAST_STATUSES,
   forecastStatusLabel,
@@ -12,10 +18,12 @@ import {
   isForecast,
   type ForecastStatusFilter,
 } from '../lib/forecasts';
-import type { Forecast, ForecastDraftInput, ForecastSeed, WorkspaceData } from '../lib/types';
+import type { EvaluationRun, Forecast, ForecastDraftInput, ForecastReviewItem, ForecastSeed, WorkspaceData } from '../lib/types';
 import ForecastComposer from './ForecastComposer';
 import ForecastDetail from './ForecastDetail';
 import { ForecastActivationDialog, ForecastTextActionDialog } from './ForecastDialogs';
+import ForecastEvaluationDialog, { type EvaluationFeedback } from './ForecastEvaluationDialog';
+import ForecastReviewQueue from './ForecastReviewQueue';
 
 export type ForecastComposeRequest = {
   id: number;
@@ -34,10 +42,12 @@ type TextAction = { forecast: Forecast; mode: 'cancel' | 'note' } | null;
 
 class ForecastApiError extends Error {
   fieldErrors: unknown;
+  code: string | null;
 
-  constructor(message: string, fieldErrors?: unknown) {
+  constructor(message: string, fieldErrors?: unknown, code: string | null = null) {
     super(message);
     this.fieldErrors = fieldErrors;
+    this.code = code;
   }
 }
 
@@ -57,6 +67,7 @@ async function forecastRequest(url: string, init?: RequestInit) {
     throw new ForecastApiError(
       typeof payload?.error === 'string' ? payload.error : 'The forecast request could not be completed.',
       payload?.fieldErrors,
+      typeof payload?.code === 'string' ? payload.code : null,
     );
   }
   return payload;
@@ -97,7 +108,18 @@ export default function ForecastWorkspace({ workspace, composeRequest, onNotice,
   const [actionError, setActionError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<unknown>(null);
   const [pendingSeeds, setPendingSeeds] = useState<Record<number, ForecastSeed>>({});
+  const [reviewItems, setReviewItems] = useState<ForecastReviewItem[]>([]);
+  const [reviewVisibility, setReviewVisibility] = useState<ReviewVisibility>('unacknowledged');
+  const [reviewsLoading, setReviewsLoading] = useState(true);
+  const [reviewsError, setReviewsError] = useState<string | null>(null);
+  const [evaluationTarget, setEvaluationTarget] = useState<Forecast | null>(null);
+  const [evaluationBusy, setEvaluationBusy] = useState(false);
+  const [evaluationError, setEvaluationError] = useState<string | null>(null);
+  const [evaluationFeedback, setEvaluationFeedback] = useState<Record<number, EvaluationFeedback>>({});
   const automaticDetailAttempts = useRef(new Set<number>());
+  const automaticEvaluationAttempts = useRef(new Set<number>());
+  const reviewRequestGate = useRef(createLatestRequestGate());
+  const reviewAbortController = useRef<AbortController | null>(null);
 
   const trackedSymbols = useMemo(() => [...new Set([
     ...workspace.positions.map(({ symbol }) => symbol),
@@ -126,6 +148,30 @@ export default function ForecastWorkspace({ workspace, composeRequest, onNotice,
     }
   }, []);
 
+  const loadReviews = useCallback(async (visibility: ReviewVisibility) => {
+    reviewAbortController.current?.abort();
+    const controller = new AbortController();
+    reviewAbortController.current = controller;
+    const requestId = reviewRequestGate.current.begin();
+    setReviewsLoading(true);
+    setReviewsError(null);
+    try {
+      const includeAcknowledged = visibility !== 'unacknowledged';
+      const payload = await forecastRequest(`/api/forecast-reviews?includeAcknowledged=${includeAcknowledged}`, { cache: 'no-store', signal: controller.signal });
+      if (!reviewRequestGate.current.isCurrent(requestId)) return;
+      const values = Array.isArray(payload?.reviewItems) ? payload.reviewItems.filter(isForecastReviewItem) : [];
+      if (!Array.isArray(payload?.reviewItems) || values.length !== payload.reviewItems.length) {
+        throw new ForecastApiError('Northstar received review data in an unexpected format.');
+      }
+      setReviewItems(values);
+    } catch (error) {
+      if (!reviewRequestGate.current.isCurrent(requestId) || (error instanceof DOMException && error.name === 'AbortError')) return;
+      setReviewsError(error instanceof Error ? error.message : 'Evaluation reviews could not be loaded.');
+    } finally {
+      if (reviewRequestGate.current.isCurrent(requestId)) setReviewsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     let active = true;
     forecastRequest('/api/forecasts', { cache: 'no-store' })
@@ -144,6 +190,11 @@ export default function ForecastWorkspace({ workspace, composeRequest, onNotice,
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    void Promise.resolve().then(() => loadReviews('unacknowledged'));
+    return () => reviewAbortController.current?.abort();
+  }, [loadReviews]);
 
   const filtered = useMemo(() => filterForecasts(forecasts, statusFilter, symbolFilter), [forecasts, statusFilter, symbolFilter]);
   const groups = useMemo(() => groupForecasts(filtered), [filtered]);
@@ -191,6 +242,47 @@ export default function ForecastWorkspace({ workspace, composeRequest, onNotice,
       .finally(() => { if (active) setDetailLoading(false); });
     return () => { active = false; };
   }, [selected, upsert]);
+
+  const selectedEvaluationId = selected?.status === 'active' && !evaluationFeedback[selected.id]
+    ? selected.id
+    : null;
+
+  useEffect(() => {
+    if (!selectedEvaluationId || automaticEvaluationAttempts.current.has(selectedEvaluationId)) return;
+    const forecastId = selectedEvaluationId;
+    const evaluationAttempts = automaticEvaluationAttempts.current;
+    const controller = new AbortController();
+    let active = true;
+    evaluationAttempts.add(forecastId);
+    Promise.resolve()
+      .then(() => forecastRequest(`/api/forecasts/${forecastId}/evaluations/latest`, { cache: 'no-store', signal: controller.signal }))
+      .then((payload) => {
+        if (!active) return;
+        const latest = payload?.evaluationRun;
+        if (latest !== null && (!isEvaluationRun(latest) || latest.forecastId !== forecastId)) {
+          throw new ForecastApiError('The latest evaluation response was incomplete.');
+        }
+        setEvaluationFeedback((current) => ({
+          ...current,
+          [forecastId]: latest === null ? { state: 'idle' } : { state: 'complete', run: latest as EvaluationRun },
+        }));
+      })
+      .catch((error) => {
+        if (!active || (error instanceof DOMException && error.name === 'AbortError')) return;
+        setEvaluationFeedback((current) => ({
+          ...current,
+          [forecastId]: {
+            state: 'history-error',
+            message: error instanceof Error ? error.message : 'Latest evaluation history could not be loaded.',
+          },
+        }));
+      });
+    return () => {
+      active = false;
+      controller.abort();
+      evaluationAttempts.delete(forecastId);
+    };
+  }, [selectedEvaluationId]);
 
   const saveDraft = async (input: ForecastDraftInput, seed: ForecastSeed | null) => {
     setBusy(true);
@@ -282,6 +374,74 @@ export default function ForecastWorkspace({ workspace, composeRequest, onNotice,
     }
   };
 
+  const evaluateForecast = async () => {
+    if (!evaluationTarget) return;
+    const target = evaluationTarget;
+    setEvaluationBusy(true);
+    setEvaluationError(null);
+    setEvaluationFeedback((current) => ({ ...current, [target.id]: { state: 'running' } }));
+    try {
+      const payload = await forecastRequest(`/api/forecasts/${target.id}/evaluate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (!isForecast(payload?.forecast) || !isEvaluationRun(payload?.evaluationRun) || typeof payload?.duplicate !== 'boolean') {
+        throw new ForecastApiError('The evaluation response was incomplete.');
+      }
+      const run = payload.evaluationRun as EvaluationRun;
+      upsert(payload.forecast);
+      setEvaluationFeedback((current) => ({ ...current, [target.id]: { state: 'complete', run, duplicate: payload.duplicate as boolean } }));
+      setEvaluationTarget(null);
+      await loadReviews(reviewVisibility);
+      onNotice(payload.duplicate ? `${target.symbol} evaluation was already stored.` : `${target.symbol} evaluation completed.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Evaluation could not be completed.';
+      const providerUnavailable = error instanceof ForecastApiError && error.code === 'market_unavailable';
+      setEvaluationError(message);
+      setEvaluationFeedback((current) => ({ ...current, [target.id]: { state: 'error', message, providerUnavailable } }));
+    } finally {
+      setEvaluationBusy(false);
+    }
+  };
+
+  const acknowledgeReview = async (item: ForecastReviewItem) => {
+    const payload = await forecastRequest(`/api/forecast-reviews/${item.id}/acknowledge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmed: true }),
+    });
+    if (!isForecastReviewItem(payload?.reviewItem)) throw new ForecastApiError('The acknowledgement response was incomplete.');
+    setReviewItems((current) => reviewVisibility === 'unacknowledged'
+      ? current.filter(({ id }) => id !== item.id)
+      : current.map((value) => value.id === item.id ? payload.reviewItem as ForecastReviewItem : value));
+    onNotice(`${item.symbol} evaluation review acknowledged.`);
+    const summary = forecasts.find(({ id }) => id === item.forecastId);
+    if (summary) await selectForecast(summary);
+  };
+
+  const inspectReviewForecast = async (forecastId: number, section: 'forecast' | 'snapshot' | 'audit') => {
+    setStatusFilter('all');
+    setSymbolFilter('');
+    const summary = forecasts.find(({ id }) => id === forecastId);
+    if (summary) await selectForecast(summary);
+    else {
+      setDetailLoading(true);
+      setDetailError(null);
+      try {
+        const payload = await forecastRequest(`/api/forecasts/${forecastId}`, { cache: 'no-store' });
+        if (!isForecast(payload?.forecast)) throw new ForecastApiError('Forecast details were incomplete.');
+        upsert(payload.forecast);
+      } catch (error) {
+        setDetailError(error instanceof Error ? error.message : 'Forecast details could not be loaded.');
+        return;
+      } finally {
+        setDetailLoading(false);
+      }
+    }
+    requestAnimationFrame(() => document.getElementById(`forecast-${section === 'forecast' ? 'detail' : section}-${forecastId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  };
+
   const openComposer = (state: ComposerState) => { setActionError(null); setFieldErrors(null); setComposer(state); };
   const openActivation = (forecast: Forecast) => { setActionError(null); setActivation(forecast); };
   const openTextAction = (forecast: Forecast, mode: 'cancel' | 'note') => { setActionError(null); setTextAction({ forecast, mode }); };
@@ -297,12 +457,15 @@ export default function ForecastWorkspace({ workspace, composeRequest, onNotice,
       <button className="primary-small" onClick={() => openComposer({ seed: null })} disabled={!trackedSymbols.length}>＋ Create forecast</button>
     </section>
 
+    <ForecastReviewQueue items={reviewItems} visibility={reviewVisibility} loading={reviewsLoading} error={reviewsError} onVisibilityChange={(visibility) => { setReviewVisibility(visibility); void loadReviews(visibility); }} onRefresh={() => void loadReviews(reviewVisibility)} onInspect={(forecastId, section) => void inspectReviewForecast(forecastId, section)} onAcknowledge={acknowledgeReview} />
+
     {!forecasts.length ? <section className="panel forecast-empty"><span>✦</span><h2>Turn a market view into a measurable forecast.</h2><p>Record what you expect, the evidence on both sides, a numeric target, invalidation, confidence, and a date for honest review.</p>{trackedSymbols.length ? <button className="primary-button" onClick={() => openComposer({ seed: null })}>Create your first forecast</button> : <><p className="empty-caveat">Start by saving a real position or watchlist symbol. Northstar never substitutes a demo stock.</p><button className="secondary-button" onClick={onOpenMarkets}>Open Markets</button></>}</section>
       : !filtered.length ? <section className="panel forecast-empty compact"><span>⌕</span><h2>No forecasts match these filters.</h2><p>Adjust status or symbol to return to the full accountable record.</p><button className="secondary-button" onClick={() => { setStatusFilter('all'); setSymbolFilter(''); }}>Clear filters</button></section>
-        : <section className="forecast-master-detail"><div className="forecast-list" aria-label="Forecast list"><ForecastGroup title="Drafts" copy="Editable until activation" forecasts={groups.drafts} currency={currency} selectedId={selected?.id ?? null} onSelect={(forecast) => void selectForecast(forecast)} /><ForecastGroup title="Active" copy="Frozen and awaiting review" forecasts={groups.active} currency={currency} selectedId={selected?.id ?? null} onSelect={(forecast) => void selectForecast(forecast)} /><ForecastGroup title="Closed" copy="Preserved lifecycle outcomes" forecasts={groups.closed} currency={currency} selectedId={selected?.id ?? null} onSelect={(forecast) => void selectForecast(forecast)} /></div><div className="forecast-detail-column">{detailError && <div className="forecast-inline-error" role="alert">{detailError}</div>}{detailLoading && <div className="detail-loading" role="status">Refreshing details…</div>}{selected ? <ForecastDetail forecast={selected} currency={currency} onEdit={() => openComposer({ forecast: selected, seed: pendingSeeds[selected.id] ?? null })} onDelete={() => void deleteDraft(selected)} onActivate={() => openActivation(selected)} onCancel={() => openTextAction(selected, 'cancel')} onNote={() => openTextAction(selected, 'note')} /> : <section className="panel forecast-detail-placeholder"><strong>Select a forecast</strong><p>Choose a record to inspect its frozen fields and audit history.</p></section>}</div></section>}
+        : <section className="forecast-master-detail"><div className="forecast-list" aria-label="Forecast list"><ForecastGroup title="Drafts" copy="Editable until activation" forecasts={groups.drafts} currency={currency} selectedId={selected?.id ?? null} onSelect={(forecast) => void selectForecast(forecast)} /><ForecastGroup title="Active" copy="Frozen and awaiting review" forecasts={groups.active} currency={currency} selectedId={selected?.id ?? null} onSelect={(forecast) => void selectForecast(forecast)} /><ForecastGroup title="Closed" copy="Preserved lifecycle outcomes" forecasts={groups.closed} currency={currency} selectedId={selected?.id ?? null} onSelect={(forecast) => void selectForecast(forecast)} /></div><div className="forecast-detail-column">{detailError && <div className="forecast-inline-error" role="alert">{detailError}</div>}{detailLoading && <div className="detail-loading" role="status">Refreshing details…</div>}{selected ? <ForecastDetail forecast={selected} currency={currency} onEdit={() => openComposer({ forecast: selected, seed: pendingSeeds[selected.id] ?? null })} onDelete={() => void deleteDraft(selected)} onActivate={() => openActivation(selected)} onCancel={() => openTextAction(selected, 'cancel')} onNote={() => openTextAction(selected, 'note')} onEvaluate={() => { setEvaluationError(null); setEvaluationTarget(selected); }} evaluationFeedback={evaluationFeedback[selected.id] ?? (selected.status === 'active' ? { state: 'loading' } : null)} /> : <section className="panel forecast-detail-placeholder"><strong>Select a forecast</strong><p>Choose a record to inspect its frozen fields and audit history.</p></section>}</div></section>}
 
     {composer && <ForecastComposer forecast={composer.forecast} seed={composer.seed} workspace={workspace} busy={busy} error={actionError} fieldErrors={fieldErrors} onClose={() => !busy && setComposer(null)} onSave={saveDraft} />}
     {activation && <ForecastActivationDialog forecast={activation} currency={currency} analysisScenarioId={pendingSeeds[activation.id]?.analysisScenarioId ?? activation.pendingAnalysis?.scenarioId} busy={busy} error={actionError} onClose={() => !busy && setActivation(null)} onConfirm={activateForecast} />}
     {textAction && <ForecastTextActionDialog forecast={textAction.forecast} mode={textAction.mode} busy={busy} error={actionError} onClose={() => !busy && setTextAction(null)} onSubmit={submitTextAction} />}
+    {evaluationTarget && <ForecastEvaluationDialog forecast={evaluationTarget} busy={evaluationBusy} error={evaluationError} onClose={() => !evaluationBusy && setEvaluationTarget(null)} onConfirm={evaluateForecast} />}
   </>;
 }

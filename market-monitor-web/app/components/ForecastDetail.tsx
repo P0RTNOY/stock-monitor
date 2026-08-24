@@ -8,6 +8,7 @@ import {
   formatLocalDate,
 } from '../lib/forecasts';
 import type { Forecast } from '../lib/types';
+import { ForecastEvaluationState, type EvaluationFeedback } from './ForecastEvaluationDialog';
 
 type Props = {
   forecast: Forecast;
@@ -17,27 +18,31 @@ type Props = {
   onActivate: () => void;
   onCancel: () => void;
   onNote: () => void;
+  onEvaluate: () => void;
+  evaluationFeedback: EvaluationFeedback | null;
 };
 
 function readable(value: string) {
   return value.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-export default function ForecastDetail({ forecast, currency, onEdit, onDelete, onActivate, onCancel, onNote }: Props) {
+export default function ForecastDetail({ forecast, currency, onEdit, onDelete, onActivate, onCancel, onNote, onEvaluate, evaluationFeedback }: Props) {
   const displayCurrency = forecast.activationCurrency ?? currency;
   const draft = forecast.status === 'draft';
   const active = forecast.status === 'active';
   const snapshot = forecast.analysisSnapshot;
   const report = snapshot?.report;
-  return <article className="panel forecast-detail" aria-label={`${forecast.symbol} forecast detail`}>
+  return <article id={`forecast-detail-${forecast.id}`} className="panel forecast-detail" aria-label={`${forecast.symbol} forecast detail`}>
     <div className="forecast-detail-heading">
       <div><span className={`forecast-status ${forecast.status}`}>{forecastStatusLabel(forecast.status)}</span><div className="forecast-symbol-line"><span className={`direction ${forecast.direction}`}>{forecast.direction}</span><h2>{forecast.symbol}</h2><small>{forecast.confidence}% confidence</small></div><p>{forecast.setupTag}</p></div>
       <div className="forecast-detail-actions">
         {draft && <><button className="secondary-button" onClick={onEdit}>Edit draft</button><button className="primary-button" onClick={onActivate}>Activate</button></>}
-        {active && <><button className="secondary-button" onClick={onNote}>Add note</button><button className="danger-ghost" onClick={onCancel}>Cancel</button></>}
+        {active && <><button className="primary-button" onClick={onEvaluate} disabled={evaluationFeedback?.state === 'running'}>{evaluationFeedback?.state === 'running' ? 'Evaluating…' : 'Evaluate now'}</button><button className="secondary-button" onClick={onNote}>Add note</button><button className="danger-ghost" onClick={onCancel}>Cancel</button></>}
         {!draft && !active && <button className="secondary-button" onClick={onNote}>Add review note</button>}
       </div>
     </div>
+
+    {active && <ForecastEvaluationState feedback={evaluationFeedback} />}
 
     <div className={`forecast-lock-state ${draft ? 'editable' : 'locked'}`}><span>{draft ? '✎' : '⌁'}</span><div><strong>{draft ? 'Editable draft' : 'Activated snapshot locked'}</strong><p>{draft ? 'Revise this forecast until you are ready to capture a real market snapshot.' : 'The original thesis and measurable conditions are preserved. Later notes appear only in the event history.'}</p></div></div>
 
@@ -61,7 +66,7 @@ export default function ForecastDetail({ forecast, currency, onEdit, onDelete, o
 
     {forecast.resolutionReason && <div className="forecast-resolution"><strong>Resolution reason</strong><p>{forecast.resolutionReason}</p></div>}
 
-    {snapshot && <section className="forecast-analysis-snapshot">
+    {snapshot && <section id={`forecast-snapshot-${forecast.id}`} className="forecast-analysis-snapshot">
       <div className="snapshot-heading"><div><p className="section-label">Immutable analysis snapshot</p><h3>{readable(snapshot.lifecycleState)} {readable(snapshot.setup)} scenario</h3></div><span>{snapshot.scenarioId}</span></div>
       <dl className="analysis-meta">
         <div><dt>Report generated — local time</dt><dd>{formatInstant(snapshot.generatedAt)}</dd></div>
@@ -77,7 +82,7 @@ export default function ForecastDetail({ forecast, currency, onEdit, onDelete, o
       {report && <details className="snapshot-raw"><summary>Original analysis report</summary><pre>{JSON.stringify(report, null, 2)}</pre></details>}
     </section>}
 
-    <section className="forecast-events"><div className="feed-heading"><div><p className="section-label">Audit trail</p><h3>Forecast history</h3></div><span>{forecast.events.length} events</span></div>{forecast.events.length ? <ol>{forecast.events.map((event) => <li key={event.id}><span className="event-mark" /><div><div><strong>{readable(event.eventType)}</strong><time dateTime={event.createdAt}>{formatInstant(event.createdAt)}</time></div>{event.note && <p>{event.note}</p>}<small>Revision {event.revision}</small></div></li>)}</ol> : <p className="events-empty">The creation event will appear here when history is available.</p>}</section>
+    <section id={`forecast-audit-${forecast.id}`} className="forecast-events"><div className="feed-heading"><div><p className="section-label">Audit trail</p><h3>Forecast history</h3></div><span>{forecast.events.length} events</span></div>{forecast.events.length ? <ol>{forecast.events.map((event) => <li key={event.id}><span className="event-mark" /><div><div><strong>{readable(event.eventType)}</strong><time dateTime={event.createdAt}>{formatInstant(event.createdAt)}</time></div>{event.note && <p>{event.note}</p>}<small>Revision {event.revision}</small></div></li>)}</ol> : <p className="events-empty">The creation event will appear here when history is available.</p>}</section>
 
     {draft && <div className="forecast-delete-row"><button onClick={onDelete}>Delete draft</button><span>Only editable drafts can be deleted.</span></div>}
   </article>;

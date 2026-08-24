@@ -7,6 +7,26 @@ import type { EvaluationRepository } from './repository.ts';
 import type { EvaluationRequest, EvaluationResult } from './types.ts';
 
 export type EvaluationProvider = (request: EvaluationRequest) => Promise<EvaluationResult>;
+export type ForecastEvaluationFailureCategory =
+  | 'provider_timeout'
+  | 'provider_unavailable'
+  | 'validation_failure';
+
+/**
+ * Safe, stable failure metadata for trusted internal orchestration.
+ *
+ * The public forecast error contract deliberately continues to expose only
+ * the existing temporary-unavailable response.
+ */
+export class ForecastEvaluationUnavailableError extends ForecastServiceError {
+  readonly failureCategory: ForecastEvaluationFailureCategory;
+
+  constructor(failureCategory: ForecastEvaluationFailureCategory) {
+    super('Forecast evaluation is temporarily unavailable.', 'market_unavailable', 503);
+    this.name = 'ForecastEvaluationUnavailableError';
+    this.failureCategory = failureCategory;
+  }
+}
 
 function emptyEvaluationBody(value: unknown) {
   if (value === undefined) return;
@@ -23,6 +43,17 @@ function acknowledgementBody(value: unknown) {
   if (Object.keys(payload).length !== 1 || payload.confirmed !== true) {
     throw new ForecastServiceError('Set confirmed to true to acknowledge this review.', 'validation_error', 400);
   }
+}
+
+function explicitEvaluationCutoff(value: string) {
+  if (typeof value !== 'string') {
+    throw new ForecastServiceError('Evaluation cutoff must be a canonical UTC timestamp.', 'validation_error', 400);
+  }
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== value) {
+    throw new ForecastServiceError('Evaluation cutoff must be a canonical UTC timestamp.', 'validation_error', 400);
+  }
+  return value;
 }
 
 export class ForecastEvaluationService {
@@ -68,11 +99,27 @@ export class ForecastEvaluationService {
     return { updatedAt: forecast.updatedAt, revision };
   }
 
-  async evaluate(profileId: number, forecastId: number, body: unknown) {
+  private async evaluateWithCutoff(
+    profileId: number,
+    forecastId: number,
+    body: unknown,
+    timing: () => { cutoff: string; persistedAt: string; explicit: boolean },
+  ) {
     emptyEvaluationBody(body);
     const forecast = await this.requireForecast(profileId, forecastId);
     const expected = this.activeSnapshot(forecast);
-    const cutoff = this.now();
+    const { cutoff, persistedAt, explicit } = timing();
+    const activationCutoff = Math.max(
+      Date.parse(forecast.activatedAt as string),
+      Date.parse(forecast.marketDataAsOf as string),
+    );
+    if (explicit && Date.parse(cutoff) < activationCutoff) {
+      throw new ForecastServiceError(
+        'Evaluation cutoff cannot precede the active forecast snapshot.',
+        'validation_error',
+        400,
+      );
+    }
     const request = buildEvaluationRequest(forecast, cutoff);
     let result: EvaluationResult;
     try {
@@ -80,7 +127,12 @@ export class ForecastEvaluationService {
     } catch (error) {
       logForecastDiagnostic('forecast evaluation provider', error);
       if (error instanceof EvaluationProviderError) {
-        throw new ForecastServiceError('Forecast evaluation is temporarily unavailable.', 'market_unavailable', 503);
+        const failureCategory = error.failureKind === 'timeout'
+          ? 'provider_timeout'
+          : error.failureKind === 'unavailable'
+            ? 'provider_unavailable'
+            : 'validation_failure';
+        throw new ForecastEvaluationUnavailableError(failureCategory);
       }
       throw error;
     }
@@ -92,7 +144,7 @@ export class ForecastEvaluationService {
         expected.updatedAt,
         expected.revision,
         result,
-        cutoff,
+        persistedAt,
       );
     } catch (error) {
       if (error instanceof Error && error.message === 'EvaluationFingerprintConflict') {
@@ -116,6 +168,22 @@ export class ForecastEvaluationService {
       evaluationRun: persisted.run,
       duplicate: persisted.duplicate,
     };
+  }
+
+  async evaluate(profileId: number, forecastId: number, body: unknown) {
+    return this.evaluateWithCutoff(profileId, forecastId, body, () => {
+      const now = this.now();
+      return { cutoff: now, persistedAt: now, explicit: false };
+    });
+  }
+
+  async evaluateAt(profileId: number, forecastId: number, body: unknown, evaluationCutoff: string) {
+    const cutoff = explicitEvaluationCutoff(evaluationCutoff);
+    return this.evaluateWithCutoff(profileId, forecastId, body, () => ({
+      cutoff,
+      persistedAt: this.now(),
+      explicit: true,
+    }));
   }
 
   async listReviews(profileId: number, includeAcknowledged = false) {

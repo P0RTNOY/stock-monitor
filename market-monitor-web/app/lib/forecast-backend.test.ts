@@ -280,6 +280,7 @@ test('safe API error contract preserves actionable fields and hides unknown fail
   assert.equal(JSON.stringify(diagnostic).includes('abc123'), false);
   assert.equal(JSON.stringify(diagnostic).includes('provider.test'), false);
   assert.equal(JSON.stringify(diagnostic).includes('sk-proj-example'), false);
+  assert.equal(JSON.stringify(sanitizedForecastDiagnostic(new Error('plain private-provider-detail'))).includes('private'), false);
 });
 
 function createProfileTable(database: DatabaseSync) {

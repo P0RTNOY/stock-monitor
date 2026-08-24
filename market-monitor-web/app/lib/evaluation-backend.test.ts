@@ -5,9 +5,14 @@ import test from 'node:test';
 import { forecastEventUpgradeStatements, forecastInitializationStatements } from '../../db/forecast-initialization.ts';
 import { buildEvaluationRequest, EvaluationProviderError, evaluateWithPython, normalizeEvaluationResult } from './server/evaluation/client.ts';
 import { D1EvaluationRepository } from './server/evaluation/repository.ts';
-import { ForecastEvaluationService } from './server/evaluation/service.ts';
+import {
+  ForecastEvaluationService,
+  ForecastEvaluationUnavailableError,
+} from './server/evaluation/service.ts';
 import type { EvaluationKind, EvaluationRequest, EvaluationResult } from './server/evaluation/types.ts';
+import { forecastErrorContract } from './server/forecasts/error-contract.ts';
 import { D1ForecastRepository } from './server/forecasts/repository.ts';
+import { ForecastServiceError } from './server/forecasts/service.ts';
 
 const NOW = '2026-08-24T10:00:00.000Z';
 
@@ -182,7 +187,29 @@ test('Python evaluation adapter sends the frozen request no-store and rejects ma
 
   await assert.rejects(() => evaluateWithPython(input, (async () => Response.json({ result: { ...valid, forecast_id: 8 } })) as typeof fetch), EvaluationProviderError);
   await assert.rejects(() => evaluateWithPython(input, (async () => Response.json({ result: { ...valid, extra: true } })) as typeof fetch), /fields/);
-  await assert.rejects(() => evaluateWithPython(input, (async () => new Response('nope', { status: 503 })) as typeof fetch), /could not evaluate/);
+  await assert.rejects(
+    () => evaluateWithPython(input, (async () => new Response('nope', { status: 503 })) as typeof fetch),
+    (error: unknown) => error instanceof EvaluationProviderError && error.failureKind === 'unavailable',
+  );
+  await assert.rejects(
+    () => evaluateWithPython(input, (async () => { throw new Error('socket detail'); }) as typeof fetch),
+    (error: unknown) => error instanceof EvaluationProviderError && error.failureKind === 'unavailable',
+  );
+  const timedOut = AbortSignal.abort(new DOMException('The operation timed out.', 'TimeoutError'));
+  await assert.rejects(
+    () => evaluateWithPython(input, (async () => { throw timedOut.reason; }) as typeof fetch, timedOut),
+    (error: unknown) => error instanceof EvaluationProviderError && error.failureKind === 'timeout',
+  );
+  const bodyTimeout = new AbortController();
+  await assert.rejects(
+    () => evaluateWithPython(input, (async () => new Response(new ReadableStream({
+      start(controller) {
+        bodyTimeout.abort(new DOMException('The response body timed out.', 'TimeoutError'));
+        controller.error(bodyTimeout.signal.reason);
+      },
+    }), { headers: { 'Content-Type': 'application/json' } })) as typeof fetch, bodyTimeout.signal),
+    (error: unknown) => error instanceof EvaluationProviderError && error.failureKind === 'timeout',
+  );
   await assert.rejects(() => evaluateWithPython(input, (async () => new Response('{}', {
     headers: { 'Content-Type': 'application/json', 'Content-Length': String(600 * 1024) },
   })) as typeof fetch), /too large/);
@@ -302,6 +329,50 @@ test('latest evaluation lookup is profile-scoped and returns the newest durable 
   db.close();
 });
 
+test('internal evaluation accepts only canonical UTC cutoffs and separates them from persistence time', async () => {
+  const db = database();
+  const id = insertActive(db);
+  const d1 = new SQLiteD1(db) as unknown as D1Database;
+  const forecasts = new D1ForecastRepository(d1);
+  const evaluations = new D1EvaluationRepository(d1);
+  const evaluationCutoff = '2026-08-25T10:00:00.000Z';
+  const persistedAt = '2026-08-25T10:05:00.000Z';
+  let providerCalls = 0;
+  const service = new ForecastEvaluationService(forecasts, evaluations, async (input) => {
+    providerCalls += 1;
+    return { ...result(id), evaluation_cutoff: input.evaluation_cutoff };
+  }, () => new Date(persistedAt));
+
+  const saved = await service.evaluateAt(1, id, {}, evaluationCutoff);
+  assert.equal(saved.evaluationRun.evaluationCutoff, evaluationCutoff);
+  assert.equal(saved.evaluationRun.createdAt, persistedAt);
+  const row = db.prepare(`SELECT evaluation_cutoff AS evaluationCutoff, created_at AS createdAt
+    FROM evaluation_runs WHERE id = ?`).get(saved.evaluationRun.id);
+  assert.equal(row?.evaluationCutoff, evaluationCutoff);
+  assert.equal(row?.createdAt, persistedAt);
+
+  for (const invalid of [
+    '2026-08-25T10:00:00Z',
+    '2026-08-25T13:00:00.000+03:00',
+    'not-an-instant',
+  ]) {
+    await assert.rejects(
+      () => service.evaluateAt(1, id, {}, invalid),
+      (error: unknown) => error instanceof ForecastServiceError
+        && error.code === 'validation_error'
+        && error.status === 400,
+    );
+  }
+  await assert.rejects(
+    () => service.evaluateAt(1, id, {}, '2026-08-24T09:57:59.999Z'),
+    (error: unknown) => error instanceof ForecastServiceError
+      && error.code === 'validation_error'
+      && error.status === 400,
+  );
+  assert.equal(providerCalls, 1);
+  db.close();
+});
+
 test('needs-review preserves active state and acknowledgement appends an audit event', async () => {
   const db = database();
   const id = insertActive(db);
@@ -362,11 +433,40 @@ test('service rejects unknown bodies, cross-profile access, stale revisions, and
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM evaluation_runs').get()?.count, 0);
 
   const unavailable = new ForecastEvaluationService(forecasts, evaluations, async () => {
-    throw new EvaluationProviderError('private upstream detail');
+    throw new EvaluationProviderError('private upstream detail', 'unavailable');
   }, () => new Date(NOW));
   await assert.rejects(() => unavailable.evaluate(1, id, {}), (error: unknown) => (
-    error instanceof Error && error.message === 'Forecast evaluation is temporarily unavailable.'
+    error instanceof ForecastEvaluationUnavailableError
+      && error.message === 'Forecast evaluation is temporarily unavailable.'
+      && error.failureCategory === 'provider_unavailable'
   ));
+  const timeout = new ForecastEvaluationService(forecasts, evaluations, async () => {
+    throw new EvaluationProviderError('private timeout detail', 'timeout');
+  }, () => new Date(NOW));
+  await assert.rejects(() => timeout.evaluate(1, id, {}), (error: unknown) => (
+    error instanceof ForecastEvaluationUnavailableError
+      && error.message === 'Forecast evaluation is temporarily unavailable.'
+      && error.failureCategory === 'provider_timeout'
+  ));
+  const invalidResponse = new ForecastEvaluationService(forecasts, evaluations, async () => {
+    throw new EvaluationProviderError('private response detail');
+  }, () => new Date(NOW));
+  let internalError: unknown;
+  try {
+    await invalidResponse.evaluate(1, id, {});
+  } catch (error) {
+    internalError = error;
+  }
+  assert.ok(internalError instanceof ForecastEvaluationUnavailableError);
+  assert.equal(internalError.failureCategory, 'validation_failure');
+  assert.deepEqual(forecastErrorContract(internalError), {
+    status: 503,
+    body: {
+      error: 'Forecast evaluation is temporarily unavailable.',
+      code: 'market_unavailable',
+    },
+    report: false,
+  });
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM evaluation_runs').get()?.count, 0);
   db.close();
 });

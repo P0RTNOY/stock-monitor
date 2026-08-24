@@ -29,10 +29,15 @@ const REASONS_BY_KIND = {
   ]),
 } as const;
 
+export type EvaluationProviderFailureKind = 'timeout' | 'unavailable' | 'invalid_response';
+
 export class EvaluationProviderError extends Error {
-  constructor(message: string) {
+  readonly failureKind: EvaluationProviderFailureKind;
+
+  constructor(message: string, failureKind: EvaluationProviderFailureKind = 'invalid_response') {
     super(message);
     this.name = 'EvaluationProviderError';
+    this.failureKind = failureKind;
   }
 }
 
@@ -347,7 +352,11 @@ async function boundedResponseText(response: Response, maxBytes: number) {
   return text + decoder.decode();
 }
 
-export async function evaluateWithPython(request: EvaluationRequest, fetcher: typeof fetch = fetch): Promise<EvaluationResult> {
+export async function evaluateWithPython(
+  request: EvaluationRequest,
+  fetcher: typeof fetch = fetch,
+  timeoutSignal: AbortSignal = AbortSignal.timeout(30_000),
+): Promise<EvaluationResult> {
   let response: Response;
   try {
     response = await fetcher(evaluationServiceUrl(), {
@@ -356,16 +365,30 @@ export async function evaluateWithPython(request: EvaluationRequest, fetcher: ty
       body: JSON.stringify(request),
       cache: 'no-store',
       redirect: 'error',
-      signal: AbortSignal.timeout(30_000),
+      signal: timeoutSignal,
     });
   } catch {
-    throw new EvaluationProviderError('Evaluation provider is unavailable.');
+    throw new EvaluationProviderError(
+      'Evaluation provider is unavailable.',
+      timeoutSignal.aborted ? 'timeout' : 'unavailable',
+    );
   }
-  if (!response.ok) throw new EvaluationProviderError('Evaluation provider could not evaluate this forecast.');
+  if (!response.ok) {
+    throw new EvaluationProviderError('Evaluation provider could not evaluate this forecast.', 'unavailable');
+  }
   if (!response.headers.get('content-type')?.toLowerCase().startsWith('application/json')) {
     throw new EvaluationProviderError('Evaluation provider returned an unsupported response.');
   }
-  const text = await boundedResponseText(response, 512 * 1024);
+  let text: string;
+  try {
+    text = await boundedResponseText(response, 512 * 1024);
+  } catch (error) {
+    if (error instanceof EvaluationProviderError) throw error;
+    throw new EvaluationProviderError(
+      'Evaluation provider response could not be read.',
+      timeoutSignal.aborted ? 'timeout' : 'unavailable',
+    );
+  }
   let decoded: unknown;
   try { decoded = JSON.parse(text); } catch { throw new EvaluationProviderError('Evaluation provider returned invalid JSON.'); }
   const envelope = object(decoded, 'evaluation response');

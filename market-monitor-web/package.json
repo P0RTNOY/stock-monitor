@@ -11,7 +11,8 @@
     "start": "vinext start",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "test": "node --experimental-strip-types --test app/lib/*.test.ts",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "forecast:coordinate": "node --experimental-strip-types scripts/run-forecast-coordinator.ts"
   },
   "dependencies": {
     "next": "16.2.6",

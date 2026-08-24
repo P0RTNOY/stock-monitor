@@ -2,6 +2,8 @@
 
 Northstar Forecasts turns a free-text market note into a structured prediction that can eventually be evaluated. A forecast records what the user expected, the evidence available at the time, what would invalidate the idea, and when it should be reviewed. It remains a journaling and accountability tool: Northstar does not create forecasts, recommend trades, or execute orders.
 
+This document describes the immutable Phase 1 foundation. Phase 2A now adds explicit, manual completed-bar evaluation without changing that activation contract. See [`forecast-evaluation-phase-2a.md`](forecast-evaluation-phase-2a.md).
+
 ## Domain model
 
 Every forecast belongs to the current investment profile and may use only a symbol already saved as a position or watchlist item for that profile. The core record contains:
@@ -32,9 +34,9 @@ The persisted lifecycle is:
 
 ```text
 draft -> active -> cancelled
-                  target_hit    (reserved for Phase 2 evaluation)
-                  invalidated   (reserved for Phase 2 evaluation)
-                  expired       (reserved for Phase 2 evaluation)
+                  target_hit    (written by the Phase 2A evaluator)
+                  invalidated   (written by the Phase 2A evaluator)
+                  expired       (written by the Phase 2A evaluator)
 ```
 
 Phase 1 implements these user-driven transitions:
@@ -46,7 +48,7 @@ Phase 1 implements these user-driven transitions:
 - **Cancel active forecast:** close an active forecast with a required reason. Cancellation is not a correctness judgment.
 - **Add amendment or review note:** add context without changing the activated forecast.
 
-No Phase 1 process automatically marks a forecast `target_hit`, `invalidated`, or `expired`. Those states are present so the schema and user interface have a stable lifecycle for the evaluator planned in Phase 2.
+No Phase 1 process marks a forecast `target_hit`, `invalidated`, or `expired`. The manual Phase 2A evaluator can now write those terminal states from trusted completed-bar evidence. It preserves the same immutable activated record and appends a versioned evaluation run and audit event.
 
 Unsupported transitions fail on the server. An active forecast cannot return to draft, be deleted, or have its original fields replaced.
 
@@ -64,6 +66,8 @@ Meaningful actions also create append-only events:
 - `cancelled`
 - `amendment`
 - `review_note`
+- `evaluated` (Phase 2A)
+- `evaluation_review_acknowledged` (Phase 2A)
 
 Draft update events preserve the change history leading up to activation. Amendments and review notes after activation preserve later reasoning separately from the original commitment. They are not edits to the thesis, confidence, target, horizon, invalidation, activation quote, or analysis snapshot.
 
@@ -146,7 +150,7 @@ The current application is not safe for public multi-user deployment. Before exp
 
 ## Current limitations
 
-Phase 1 intentionally does not include:
+The Phase 1 foundation itself does not include:
 
 - automatic target-hit, invalidation, expiry, or correctness evaluation;
 - outcome records, accuracy statistics, confidence calibration, or a review queue;
@@ -154,4 +158,4 @@ Phase 1 intentionally does not include:
 - broker integration, order execution, personalized financial advice, or AI-generated forecasts;
 - full authentication, billing, collaboration, backtesting, or a replacement charting system.
 
-Automated evaluation is deferred because honest scoring needs explicit completed-market-data rules, deterministic same-bar precedence, idempotent processing, exchange-calendar handling, and an auditable outcome record. Adding a scheduler before those contracts are tested would make forecast results difficult to trust. The exact recommended Phase 2 starting point is documented in the [Phase 2 roadmap](phase-2-roadmap.md).
+Those evaluation contracts now exist in Phase 2A, but evaluation remains an explicit one-forecast action. Background scheduling, delivery, global analytics, authentication, and multi-user isolation remain absent. See the [Phase 2A evaluation guide](forecast-evaluation-phase-2a.md) and [Phase 2 roadmap](phase-2-roadmap.md).

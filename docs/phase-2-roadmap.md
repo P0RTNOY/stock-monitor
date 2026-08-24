@@ -2,47 +2,48 @@
 
 Phase 2 should make active forecasts measurable without weakening the immutable Phase 1 record. It should not broaden Northstar into trading automation, personalized advice, or AI-generated predictions.
 
-## Exact starting point
+## Phase 2A — complete
 
-Start with a pure, deterministic outcome-decision module and its fixture-based tests. Do not start with a scheduler or database mutation.
+Phase 2A implements the trustworthy manual-evaluation slice:
 
-The first change should define an input contract containing one immutable active-forecast snapshot plus ordered, completed market observations, and an output contract containing exactly one of:
+- a pure deterministic Python evaluator over immutable activation terms, normalized completed daily bars, an explicit cutoff, and exchange-session coverage proof;
+- a frozen versioned policy for targets, ranges, gaps, same-bar collisions, expiry, currency, corporate actions, and unsupported neutral semantics;
+- exact results `no_change`, `target_hit`, `invalidated`, `expired`, and `needs_review`, with stable reasons, evidence, and a logical-input fingerprint;
+- append-only D1 evaluation runs, atomic terminal transitions, optimistic concurrency checks, and idempotent replay;
+- a manual **Evaluate now** confirmation and durable Review Queue;
+- append-only acknowledgement that never overrides or reclassifies an evaluator result.
 
-- `no_change`
-- `target_hit`
-- `invalidated`
-- `expired`
+The implementation is documented in [`forecast-evaluation-phase-2a.md`](forecast-evaluation-phase-2a.md), with normative policy in [`forecast-evaluation-ruleset-v1.md`](forecast-evaluation-ruleset-v1.md).
 
-The result must include the decisive observation, evaluation `as of` time, provider, rule version, and human-readable reason. Freeze and test rules for point targets, ranges, price gaps, evaluation-date boundaries, exchange calendars, missing data, and bars that touch both target and invalidation. Replaying the same input must always produce the same output.
+Phase 2A remains manual. It has no due-forecast batch, scheduler, email, push, webhook delivery, global accuracy dashboard, authentication, or multi-user isolation. Remote Cloudflare D1 execution and browser end-to-end behavior have not been verified.
 
-This decision layer is the prerequisite for every other Phase 2 feature. It makes evaluation reviewable before background execution or persistence can hide mistakes.
+## Phase 2B — exact next step
 
-## Recommended sequence
+Start with a bounded, idempotent, operator-invoked due-forecast coordinator. Do not start with a cron trigger, email, push notification, or analytics dashboard.
 
-1. **Outcome decision contract and tests**
-   - Implement the pure evaluator described above.
-   - Use completed provider data and injected clocks only.
-   - Add bullish, bearish, neutral, gap, missing-data, and same-bar precedence fixtures.
+The first Phase 2B change should define and test:
 
-2. **Append-only outcome records**
-   - Persist proposed and accepted evaluation results separately from the original forecast.
-   - Record engine/rule version and the exact observation that caused the transition.
-   - Make repeated evaluation idempotent and preserve an administrative correction trail.
+- a profile-scoped query that selects active forecasts due at or before an injected cutoff in a stable order;
+- an explicit batch limit and continuation cursor so work is bounded;
+- a coordinator that invokes the existing single-forecast evaluation service without bypassing its fingerprint, concurrency, provider, or atomic-persistence protections;
+- per-item success, duplicate, `needs_review`, provider-unavailable, stale-state, and unexpected-error results so one forecast cannot abort the batch;
+- replay tests proving that the same cutoff and logical market inputs do not duplicate runs, events, review items, or terminal transitions;
+- structured diagnostics containing identifiers and error classes but no secrets or provider response bodies.
 
-3. **Evaluation runner and review queue**
-   - Select due active forecasts in bounded batches.
-   - Separate provider-unavailable results from genuine `no_change` decisions.
-   - Let the user inspect the evidence and outcome reason before broader automation is enabled.
+The first invocation should remain operator-controlled. A scheduler may be considered only after the coordinator is bounded, observable, restartable, and idempotent under partial failure. Email, push, webhooks, and global analytics remain outside Phase 2B's first slice.
 
-4. **Background scheduling and real alerts**
+## Later sequence
+
+1. **Scheduling and delivery**
    - Add retries, leases, observability, and duplicate-delivery protection.
-   - Deliver outcome/review notifications only after the evaluator and persistence layer are proven idempotent.
+   - Attach a scheduler only after the Phase 2B coordinator is proven.
+   - Deliver outcome/review notifications only after scheduling is reliable and authenticated ownership exists.
 
-5. **Accuracy and calibration analytics**
+2. **Accuracy and calibration analytics**
    - Compute results by direction, setup tag, horizon, confidence bucket, and analysis-scenario type.
    - Show sample sizes and unresolved/cancelled forecasts so the interface does not overstate performance.
 
-6. **Interactive chart context**
+3. **Interactive chart context**
    - Add candlesticks and saved drawings linked to forecast/review timestamps.
    - Preserve the original activation snapshot rather than redrawing historical intent from current data.
 

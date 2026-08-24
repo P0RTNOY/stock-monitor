@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { drizzle } from 'drizzle-orm/d1';
 import * as schema from './schema';
+import { forecastInitializationStatements } from './forecast-initialization.ts';
 
 let readyPromise: Promise<void> | undefined;
 
@@ -77,6 +78,7 @@ async function initializeDatabase() {
       FOREIGN KEY (profile_id) REFERENCES investment_profiles(id) ON DELETE CASCADE
     )`),
     d1.prepare('CREATE INDEX IF NOT EXISTS idx_alerts_profile_active ON review_alerts(profile_id, active)'),
+    ...forecastInitializationStatements().map((statement) => d1.prepare(statement)),
   ]);
 
   const cleanupMarker = await d1.prepare('SELECT value FROM app_metadata WHERE key = ?')

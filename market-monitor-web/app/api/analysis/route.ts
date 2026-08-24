@@ -1,6 +1,7 @@
 import { isTechnicalAnalysisReport } from '@/app/lib/analysis';
 import { TICKER_PATTERN } from '@/app/lib/tickers';
 import { ensureDatabase, getD1 } from '@/db';
+import { resolveCurrentProfile } from '@/app/lib/server/profile';
 
 const REQUEST_FIELDS = new Set([
   'symbol',
@@ -67,9 +68,10 @@ export async function POST(request: Request) {
     }
     const payload = normalizePayload(await request.json());
     await ensureDatabase();
-    const tracked = await getD1().prepare(`SELECT symbol FROM positions WHERE profile_id = 1 AND symbol = ?
-      UNION SELECT symbol FROM watchlist_items WHERE profile_id = 1 AND symbol = ? LIMIT 1`)
-      .bind(payload.symbol, payload.symbol).first();
+    const { profileId } = await resolveCurrentProfile(request);
+    const tracked = await getD1().prepare(`SELECT symbol FROM positions WHERE profile_id = ? AND symbol = ?
+      UNION SELECT symbol FROM watchlist_items WHERE profile_id = ? AND symbol = ? LIMIT 1`)
+      .bind(profileId, payload.symbol, profileId, payload.symbol).first();
     if (!tracked) {
       return Response.json({ error: 'Save this symbol as a position or watchlist item first.' }, { status: 400 });
     }

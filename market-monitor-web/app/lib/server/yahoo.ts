@@ -1,4 +1,4 @@
-import { normalizeTickerSearchResults, type TickerSuggestion } from '../tickers';
+import { normalizeTickerSearchResults, type TickerSuggestion } from '../tickers.ts';
 
 type YahooChart = {
   chart?: {
@@ -20,12 +20,13 @@ type YahooChart = {
 const MAX_PROVIDER_BYTES = 256 * 1024;
 const PROVIDER_HEADERS = { 'User-Agent': 'Mozilla/5.0 Northstar market monitor' };
 
-async function providerJson(url: URL) {
+async function providerJson(url: URL, { fresh = false }: { fresh?: boolean } = {}) {
   const response = await fetch(url, {
     headers: PROVIDER_HEADERS,
     redirect: 'manual',
     signal: AbortSignal.timeout(8_000),
-    cf: { cacheTtl: 300, cacheEverything: true },
+    cache: fresh ? 'no-store' : 'default',
+    cf: fresh ? { cacheTtl: 0, cacheEverything: false } : { cacheTtl: 300, cacheEverything: true },
   });
   if (!response.ok) throw new Error('Yahoo market provider unavailable');
   const body = await response.text();
@@ -47,18 +48,25 @@ export async function resolveYahooTicker(symbol: string) {
   return results.find((candidate) => candidate.symbol === symbol) ?? null;
 }
 
-export async function fetchYahooQuote(symbol: string) {
+export async function fetchYahooQuote(symbol: string, { fresh = false }: { fresh?: boolean } = {}) {
   const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
   url.searchParams.set('range', '1mo');
   url.searchParams.set('interval', '1d');
   url.searchParams.set('includePrePost', 'false');
   url.searchParams.set('events', 'div,splits');
-  const payload = await providerJson(url) as YahooChart;
+  const payload = await providerJson(url, { fresh }) as YahooChart;
   const chart = payload.chart?.result?.[0];
   if (!chart || payload.chart?.error) throw new Error(`Market data unavailable for ${symbol}`);
-  const closes = (chart.indicators?.quote?.[0]?.close ?? [])
-    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
-  const price = chart.meta?.regularMarketPrice ?? closes.at(-1) ?? null;
+  const points = (chart.indicators?.quote?.[0]?.close ?? []).flatMap((close, index) => (
+    typeof close === 'number' && Number.isFinite(close)
+      ? [{ close, timestamp: chart.timestamp?.[index] }]
+      : []
+  ));
+  const closes = points.map(({ close }) => close);
+  const hasTimedMarketPrice = typeof chart.meta?.regularMarketPrice === 'number'
+    && Number.isFinite(chart.meta.regularMarketPrice)
+    && typeof chart.meta.regularMarketTime === 'number';
+  const price = hasTimedMarketPrice ? chart.meta?.regularMarketPrice ?? null : points.at(-1)?.close ?? null;
   if (price === null || !Number.isFinite(price)) throw new Error(`Market data unavailable for ${symbol}`);
   const previousCloseValue = chart.meta?.previousClose ?? chart.meta?.chartPreviousClose ?? closes.at(-2) ?? null;
   const previousClose = previousCloseValue !== null && Number.isFinite(previousCloseValue) ? previousCloseValue : null;
@@ -66,16 +74,17 @@ export async function fetchYahooQuote(symbol: string) {
   const changePct = change !== null && previousClose ? (change / previousClose) * 100 : null;
   return {
     symbol,
+    provider: 'yahoo-finance',
     currency: chart.meta?.currency?.toUpperCase() ?? null,
     price,
     previousClose,
     change,
     changePct,
     history: closes.slice(-22),
-    updatedAt: chart.meta?.regularMarketTime
+    updatedAt: hasTimedMarketPrice && chart.meta?.regularMarketTime
       ? new Date(chart.meta.regularMarketTime * 1000).toISOString()
-      : chart.timestamp?.at(-1)
-        ? new Date((chart.timestamp.at(-1) as number) * 1000).toISOString()
+      : points.at(-1)?.timestamp
+        ? new Date((points.at(-1)?.timestamp as number) * 1000).toISOString()
         : null,
   };
 }

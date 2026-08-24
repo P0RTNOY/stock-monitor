@@ -15,6 +15,13 @@
       "when": 1787555206478,
       "tag": "0001_kind_warbound",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1787564520223,
+      "tag": "0002_quiet_gamora",
+      "breakpoints": true
     }
   ]
 }

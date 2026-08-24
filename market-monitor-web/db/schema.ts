@@ -120,7 +120,47 @@ export const forecastEvents = sqliteTable('forecast_events', {
   uniqueIndex('idx_forecast_events_revision').on(table.forecastId, table.revision),
   index('idx_forecast_events_profile_forecast').on(table.profileId, table.forecastId, table.createdAt),
   check('forecast_events_revision_check', sql`${table.revision} > 0`),
-  check('forecast_events_type_check', sql`${table.eventType} IN ('draft_created', 'draft_updated', 'activated', 'cancelled', 'amendment', 'review_note')`),
+  check('forecast_events_type_check', sql`${table.eventType} IN ('draft_created', 'draft_updated', 'activated', 'cancelled', 'amendment', 'review_note', 'evaluated', 'evaluation_review_acknowledged')`),
+]);
+
+export const evaluationRuns = sqliteTable('evaluation_runs', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  profileId: integer('profile_id').notNull().references(() => investmentProfiles.id, { onDelete: 'cascade' }),
+  forecastId: integer('forecast_id').notNull().references(() => forecasts.id, { onDelete: 'cascade' }),
+  resultKind: text('result_kind').notNull(),
+  reasonCode: text('reason_code').notNull(),
+  explanation: text('explanation').notNull(),
+  evaluatorVersion: text('evaluator_version').notNull(),
+  rulesetVersion: text('ruleset_version').notNull(),
+  evaluatedThrough: text('evaluated_through'),
+  evaluationCutoff: text('evaluation_cutoff').notNull(),
+  evidenceJson: text('evidence_json').notNull(),
+  warningsJson: text('warnings_json').notNull(),
+  inputFingerprint: text('input_fingerprint').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_evaluation_runs_idempotency').on(
+    table.forecastId,
+    table.evaluatorVersion,
+    table.rulesetVersion,
+    table.inputFingerprint,
+  ),
+  index('idx_evaluation_runs_profile_forecast').on(table.profileId, table.forecastId, table.createdAt),
+  check('evaluation_runs_kind_check', sql`${table.resultKind} IN ('no_change', 'target_hit', 'invalidated', 'expired', 'needs_review')`),
+]);
+
+export const forecastReviewItems = sqliteTable('forecast_review_items', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  profileId: integer('profile_id').notNull().references(() => investmentProfiles.id, { onDelete: 'cascade' }),
+  forecastId: integer('forecast_id').notNull().references(() => forecasts.id, { onDelete: 'cascade' }),
+  evaluationRunId: integer('evaluation_run_id').notNull().references(() => evaluationRuns.id, { onDelete: 'cascade' }),
+  reviewKind: text('review_kind').notNull(),
+  acknowledgedAt: text('acknowledged_at'),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_forecast_review_items_run').on(table.evaluationRunId),
+  index('idx_forecast_review_items_profile_open').on(table.profileId, table.acknowledgedAt, table.createdAt),
+  check('forecast_review_items_kind_check', sql`${table.reviewKind} IN ('resolved', 'needs_review')`),
 ]);
 
 export const analysisSnapshots = sqliteTable('analysis_snapshots', {

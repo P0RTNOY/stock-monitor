@@ -6,6 +6,9 @@ import { ForecastService, ForecastServiceError } from './service';
 import { normalizeForecastId } from './validation';
 import { forecastErrorContract } from './error-contract';
 import { logForecastDiagnostic } from './diagnostics.ts';
+import { evaluateWithPython } from '../evaluation/client.ts';
+import { D1EvaluationRepository } from '../evaluation/repository.ts';
+import { ForecastEvaluationService } from '../evaluation/service.ts';
 
 const MAX_REQUEST_BYTES = 600 * 1024;
 
@@ -26,16 +29,31 @@ export async function forecastRequestContext(request: Request) {
   return { profileId, service };
 }
 
-export async function requestJson(request: Request, { optional = false }: { optional?: boolean } = {}) {
+export async function evaluationRequestContext(request: Request) {
+  await ensureDatabase();
+  const { profileId } = await resolveCurrentProfile(request);
+  const d1 = getD1();
+  const service = new ForecastEvaluationService(
+    new D1ForecastRepository(d1),
+    new D1EvaluationRepository(d1),
+    evaluateWithPython,
+  );
+  return { profileId, service };
+}
+
+export async function requestJson(
+  request: Request,
+  { optional = false, maxBytes = MAX_REQUEST_BYTES }: { optional?: boolean; maxBytes?: number } = {},
+) {
   const contentType = request.headers.get('content-type')?.toLowerCase() ?? '';
   if (!contentType.startsWith('application/json')) {
     if (optional && !request.headers.get('content-length')) return undefined;
     throw new ForecastServiceError('Forecast requests must use JSON.', 'validation_error', 415);
   }
   const contentLength = Number(request.headers.get('content-length') || 0);
-  if (contentLength > MAX_REQUEST_BYTES) throw new ForecastServiceError('Forecast request is too large.', 'validation_error', 413);
+  if (contentLength > maxBytes) throw new ForecastServiceError('Forecast request is too large.', 'validation_error', 413);
   const body = await request.text();
-  if (new TextEncoder().encode(body).byteLength > MAX_REQUEST_BYTES) {
+  if (new TextEncoder().encode(body).byteLength > maxBytes) {
     throw new ForecastServiceError('Forecast request is too large.', 'validation_error', 413);
   }
   if (!body.trim()) {

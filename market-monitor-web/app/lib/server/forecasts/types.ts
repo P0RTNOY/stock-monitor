@@ -26,7 +26,7 @@ export type ForecastDraftInput = {
 export type ForecastEvent = {
   id: number;
   revision: number;
-  eventType: 'draft_created' | 'draft_updated' | 'activated' | 'cancelled' | ForecastNoteKind;
+  eventType: 'draft_created' | 'draft_updated' | 'activated' | 'cancelled' | 'evaluated' | 'evaluation_review_acknowledged' | ForecastNoteKind;
   note: string;
   payload: unknown;
   createdAt: string;

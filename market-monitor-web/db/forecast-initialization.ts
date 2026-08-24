@@ -44,7 +44,7 @@ export function forecastInitializationStatements() {
       forecast_id INTEGER NOT NULL,
       profile_id INTEGER NOT NULL,
       revision INTEGER NOT NULL CHECK (revision > 0),
-      event_type TEXT NOT NULL CHECK (event_type IN ('draft_created', 'draft_updated', 'activated', 'cancelled', 'amendment', 'review_note')),
+      event_type TEXT NOT NULL CHECK (event_type IN ('draft_created', 'draft_updated', 'activated', 'cancelled', 'amendment', 'review_note', 'evaluated', 'evaluation_review_acknowledged')),
       note TEXT NOT NULL DEFAULT '',
       payload_json TEXT NOT NULL,
       created_at TEXT NOT NULL,
@@ -85,5 +85,64 @@ export function forecastInitializationStatements() {
     )`,
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_snapshots_forecast ON analysis_snapshots(forecast_id)',
     'CREATE INDEX IF NOT EXISTS idx_analysis_snapshots_profile_symbol ON analysis_snapshots(profile_id, symbol, created_at)',
+    `CREATE TABLE IF NOT EXISTS evaluation_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      profile_id INTEGER NOT NULL,
+      forecast_id INTEGER NOT NULL,
+      result_kind TEXT NOT NULL CHECK (result_kind IN ('no_change', 'target_hit', 'invalidated', 'expired', 'needs_review')),
+      reason_code TEXT NOT NULL,
+      explanation TEXT NOT NULL,
+      evaluator_version TEXT NOT NULL,
+      ruleset_version TEXT NOT NULL,
+      evaluated_through TEXT,
+      evaluation_cutoff TEXT NOT NULL,
+      evidence_json TEXT NOT NULL,
+      warnings_json TEXT NOT NULL,
+      input_fingerprint TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (profile_id) REFERENCES investment_profiles(id) ON DELETE CASCADE,
+      FOREIGN KEY (forecast_id) REFERENCES forecasts(id) ON DELETE CASCADE
+    )`,
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_evaluation_runs_idempotency ON evaluation_runs(forecast_id, evaluator_version, ruleset_version, input_fingerprint)',
+    'CREATE INDEX IF NOT EXISTS idx_evaluation_runs_profile_forecast ON evaluation_runs(profile_id, forecast_id, created_at)',
+    `CREATE TABLE IF NOT EXISTS forecast_review_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      profile_id INTEGER NOT NULL,
+      forecast_id INTEGER NOT NULL,
+      evaluation_run_id INTEGER NOT NULL,
+      review_kind TEXT NOT NULL CHECK (review_kind IN ('resolved', 'needs_review')),
+      acknowledged_at TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (profile_id) REFERENCES investment_profiles(id) ON DELETE CASCADE,
+      FOREIGN KEY (forecast_id) REFERENCES forecasts(id) ON DELETE CASCADE,
+      FOREIGN KEY (evaluation_run_id) REFERENCES evaluation_runs(id) ON DELETE CASCADE
+    )`,
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_review_items_run ON forecast_review_items(evaluation_run_id)',
+    'CREATE INDEX IF NOT EXISTS idx_forecast_review_items_profile_open ON forecast_review_items(profile_id, acknowledged_at, created_at)',
+  ] as const;
+}
+
+/** One-time rebuild for databases created before evaluation event types existed. */
+export function forecastEventUpgradeStatements() {
+  return [
+    `CREATE TABLE forecast_events_evaluation_upgrade (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      forecast_id INTEGER NOT NULL,
+      profile_id INTEGER NOT NULL,
+      revision INTEGER NOT NULL CHECK (revision > 0),
+      event_type TEXT NOT NULL CHECK (event_type IN ('draft_created', 'draft_updated', 'activated', 'cancelled', 'amendment', 'review_note', 'evaluated', 'evaluation_review_acknowledged')),
+      note TEXT NOT NULL DEFAULT '',
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (forecast_id) REFERENCES forecasts(id) ON DELETE CASCADE,
+      FOREIGN KEY (profile_id) REFERENCES investment_profiles(id) ON DELETE CASCADE
+    )`,
+    `INSERT INTO forecast_events_evaluation_upgrade
+      (id, forecast_id, profile_id, revision, event_type, note, payload_json, created_at)
+      SELECT id, forecast_id, profile_id, revision, event_type, note, payload_json, created_at FROM forecast_events`,
+    'DROP TABLE forecast_events',
+    'ALTER TABLE forecast_events_evaluation_upgrade RENAME TO forecast_events',
+    'CREATE UNIQUE INDEX idx_forecast_events_revision ON forecast_events(forecast_id, revision)',
+    'CREATE INDEX idx_forecast_events_profile_forecast ON forecast_events(profile_id, forecast_id, created_at)',
   ] as const;
 }

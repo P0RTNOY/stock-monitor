@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import date
 from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -175,6 +176,69 @@ def get_ohlcv_history(
     # omission would hide a data-quality failure and change indicator windows.
     result = result.dropna(subset=["Timestamp"])
     return result.reset_index(drop=True)
+
+
+def get_ohlcv_history_range_with_metadata(
+    symbol: str,
+    start: date,
+    end: date,
+    interval: str = "1d",
+    *,
+    timeout: int = 10,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Return bounded raw OHLCV data and Yahoo chart metadata.
+
+    This adapter is reserved for trusted server-side forecast evaluation.  The
+    caller supplies an explicit date range and timeout; provider normalization
+    and completed-bar decisions remain in :mod:`analysis.providers`.
+    """
+
+    empty = pd.DataFrame(columns=OHLCV_COLUMNS)
+    try:
+        ticker = yf.Ticker(symbol)
+        history = ticker.history(
+            start=start.isoformat(),
+            end=end.isoformat(),
+            interval=interval,
+            auto_adjust=False,
+            back_adjust=False,
+            actions=True,
+            repair=False,
+            keepna=True,
+            prepost=False,
+            rounding=False,
+            timeout=timeout,
+        )
+        metadata = ticker.get_history_metadata()
+    except Exception as exc:
+        _log_external_failure("Bounded OHLCV history lookup", exc)
+        return empty, {}
+
+    required = {"Open", "High", "Low", "Close", "Volume"}
+    if history.empty or not required.issubset(history.columns):
+        return empty, dict(metadata) if isinstance(metadata, dict) else {}
+
+    history = history.reset_index()
+    timestamp_column = next(
+        (column for column in ("Datetime", "Date") if column in history),
+        None,
+    )
+    if timestamp_column is None:
+        return empty, dict(metadata) if isinstance(metadata, dict) else {}
+
+    history = history.rename(columns={timestamp_column: "Timestamp"})
+    for action_column in ("Dividends", "Stock Splits"):
+        if action_column not in history:
+            # Evaluation must distinguish absent Yahoo action metadata from a
+            # verified zero. The trusted provider converts these missing values
+            # into an explicit review condition.
+            history[action_column] = pd.NA
+
+    result = history[OHLCV_COLUMNS].copy()
+    for column in OHLCV_COLUMNS[1:]:
+        result[column] = pd.to_numeric(result[column], errors="coerce")
+    result = result.dropna(subset=["Timestamp"]).reset_index(drop=True)
+    return result, dict(metadata) if isinstance(metadata, dict) else {}
 
 
 def search_symbols(query: str, limit: int = 10) -> list[dict[str, str]]:

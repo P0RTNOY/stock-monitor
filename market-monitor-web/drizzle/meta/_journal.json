@@ -22,6 +22,13 @@
       "when": 1787564520223,
       "tag": "0002_quiet_gamora",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1787577792854,
+      "tag": "0003_great_xavin",
+      "breakpoints": true
     }
   ]
 }

@@ -100,23 +100,28 @@ export type AnalysisRisk = {
 
 export type AnalysisScenario = {
   scenario_id: string;
+  setup: 'rectangle';
+  timeframe: '1d' | '1wk';
   direction: 'bullish' | 'bearish' | 'undetermined';
   lifecycle_state: 'candidate' | 'confirmed' | 'retest' | 'failed_breakout' | 'invalidated' | 'target_reached' | 'expired';
   range_lower: number;
   range_upper: number;
   range_height: number;
+  range_started_at: string;
   established_at: string;
   retested_at: string | null;
   terminal_at: string | null;
   last_event_at: string;
   event_reason: string | null;
   confirmation_condition: string;
+  confirmed_at: string | null;
   entry_trigger: string;
   entry_assumption: number | null;
   analytical_invalidation: string;
   measured_target: number | null;
   intermediate_levels: AnalysisLevel[];
   risk: AnalysisRisk | null;
+  evidence_ids: string[];
   warnings: string[];
 };
 
@@ -135,6 +140,7 @@ export type TechnicalAnalysisReport = {
   ruleset_version: string;
   provider: string;
   adjustment_mode: string;
+  data_hash: string;
   status: 'no_setup' | 'scenario_detected' | 'insufficient_data';
   summary: string;
   timeframes: Record<string, AnalysisTimeframe>;
@@ -148,4 +154,110 @@ export type AnalysisAssumptions = {
   commissionPerUnit: number;
   expectedSlippagePerUnit: number;
   executionStopPrice: number | null;
+};
+
+export type ForecastDirection = 'bullish' | 'bearish' | 'neutral';
+
+export type ForecastStatus =
+  | 'draft'
+  | 'active'
+  | 'target_hit'
+  | 'invalidated'
+  | 'expired'
+  | 'cancelled';
+
+export type ForecastEvent = {
+  id: number;
+  revision: number;
+  eventType: string;
+  note: string;
+  payload: unknown;
+  createdAt: string;
+};
+
+export type ForecastAnalysisSnapshot = {
+  id?: number;
+  scenarioId: string;
+  setup: string;
+  timeframe: string;
+  generatedAt: string;
+  analysisAsOf: string;
+  completedBarAsOf: string | null;
+  provider: string;
+  adjustmentMode: string;
+  engineVersion: string;
+  rulesetVersion: string;
+  dataHash: string;
+  lifecycleState: string;
+  direction: string;
+  rangeLower: number;
+  rangeUpper: number;
+  rangeHeight: number;
+  measuredTarget: number | null;
+  evidence: AnalysisEvidence[];
+  warnings: string[];
+  report: TechnicalAnalysisReport;
+  createdAt: string;
+};
+
+export type ForecastPendingAnalysis = {
+  scenarioId: string;
+  generatedAt: string;
+  provider: string;
+  lifecycleState: string;
+  direction: string;
+};
+
+export type ForecastTarget =
+  | { kind: 'price'; price: number }
+  | { kind: 'range'; lower: number; upper: number };
+
+export type Forecast = {
+  id: number;
+  symbol: string;
+  direction: ForecastDirection;
+  confidence: number;
+  thesis: string;
+  supportingEvidence: string;
+  counterEvidence: string;
+  setupTag: string;
+  evaluationDate: string;
+  target: ForecastTarget;
+  invalidationPrice: number | null;
+  status: ForecastStatus;
+  activatedAt: string | null;
+  activationPrice: number | null;
+  activationCurrency: string | null;
+  marketDataAsOf: string | null;
+  marketProvider: string | null;
+  resolvedAt: string | null;
+  resolutionReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+  events: ForecastEvent[];
+  analysisSnapshot: ForecastAnalysisSnapshot | null;
+  pendingAnalysis: ForecastPendingAnalysis | null;
+};
+
+export type ForecastDraftInput = {
+  symbol: string;
+  direction: ForecastDirection;
+  confidence: number;
+  thesis: string;
+  supportingEvidence: string;
+  counterEvidence: string;
+  setupTag: string;
+  evaluationDate: string;
+  target: ForecastTarget;
+  invalidationPrice: number | null;
+  analysisSeed?: { report: TechnicalAnalysisReport; scenarioId: string } | null;
+};
+
+export type ForecastSeed = {
+  symbol: string;
+  direction: ForecastDirection;
+  setupTag: string;
+  target: ForecastTarget;
+  analysisReport: TechnicalAnalysisReport;
+  analysisScenarioId: string;
 };

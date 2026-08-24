@@ -14,11 +14,11 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://northstar-market-monitor.omerportnoy.chatgpt.site'),
-  title: 'Northstar — Portfolio & Market Monitor',
-  description: 'A focused workspace for monitoring the market, personal investments, and decision notes.',
+  title: 'Northstar — Accountable Stock Forecast Journal',
+  description: 'Record measurable stock forecasts alongside your portfolio, market context, and completed-bar research.',
   openGraph: {
-    title: 'Northstar — Portfolio & Market Monitor',
-    description: 'Monitor your portfolio, live market context, watchlist, journal, and review alerts in one focused workspace.',
+    title: 'Northstar — Accountable Stock Forecast Journal',
+    description: 'Create measurable forecasts, preserve activation-time market evidence, and review them alongside your portfolio.',
     url: 'https://northstar-market-monitor.omerportnoy.chatgpt.site',
     siteName: 'Northstar',
     images: [{
@@ -31,8 +31,8 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Northstar — Portfolio & Market Monitor',
-    description: 'A focused workspace for monitoring the market, personal investments, and decision notes.',
+    title: 'Northstar — Accountable Stock Forecast Journal',
+    description: 'Create measurable forecasts and preserve the evidence available when they were activated.',
     images: ['https://northstar-market-monitor.omerportnoy.chatgpt.site/og.png'],
   },
 };

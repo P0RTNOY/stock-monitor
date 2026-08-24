@@ -6,11 +6,13 @@ import { isTickerSuggestion, type TickerSuggestion } from '../lib/tickers';
 type Props = {
   value: string;
   disabled?: boolean;
+  allowedSymbols?: string[];
+  emptyMessage?: string;
   onChange: (value: string) => void;
   onSelect: (suggestion: TickerSuggestion) => void;
 };
 
-export default function TickerAutocomplete({ value, disabled, onChange, onSelect }: Props) {
+export default function TickerAutocomplete({ value, disabled, allowedSymbols, emptyMessage, onChange, onSelect }: Props) {
   const listboxId = useId();
   const [suggestions, setSuggestions] = useState<TickerSuggestion[]>([]);
   const [activeIndex, setActiveIndex] = useState(-1);
@@ -37,7 +39,10 @@ export default function TickerAutocomplete({ value, disabled, onChange, onSelect
         if (!response.ok) throw new Error('Ticker search failed');
         const payload = await response.json() as { results?: unknown };
         if (controller.signal.aborted) return;
-        const results = Array.isArray(payload.results) ? payload.results.filter(isTickerSuggestion) : [];
+        const allowed = allowedSymbols ? new Set(allowedSymbols) : null;
+        const results = Array.isArray(payload.results)
+          ? payload.results.filter(isTickerSuggestion).filter((suggestion) => !allowed || allowed.has(suggestion.symbol))
+          : [];
         setSuggestions(results);
         setActiveIndex(results.length ? 0 : -1);
         setSearchedQuery(query);
@@ -55,7 +60,7 @@ export default function TickerAutocomplete({ value, disabled, onChange, onSelect
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [query]);
+  }, [allowedSymbols, query]);
 
   const choose = (suggestion: TickerSuggestion) => {
     onChange(suggestion.symbol);
@@ -119,7 +124,7 @@ export default function TickerAutocomplete({ value, disabled, onChange, onSelect
       {loading && <p role="status">Searching the real ticker directory…</p>}
       {!loading && error && <p role="status">Ticker search is unavailable. Try again in a moment.</p>}
       {!loading && !error && searchedQuery === query && !suggestions.length
-        && <p role="status">No matching stocks or ETFs found.</p>}
+        && <p role="status">{emptyMessage ?? 'No matching stocks or ETFs found.'}</p>}
       {!loading && !error && suggestions.map((suggestion, index) => <button
         type="button"
         role="option"

@@ -11,6 +11,16 @@ import yfinance as yf
 
 
 LOGGER = logging.getLogger(__name__)
+OHLCV_COLUMNS = [
+    "Timestamp",
+    "Open",
+    "High",
+    "Low",
+    "Close",
+    "Volume",
+    "Dividends",
+    "Stock Splits",
+]
 
 
 def _log_external_failure(operation: str, error: Exception) -> None:
@@ -108,6 +118,63 @@ def get_price_history(symbol: str, period: str = "1mo") -> pd.DataFrame:
         return pd.DataFrame(columns=["Date", "Close"])
 
     return history[["Date", "Close"]].dropna()
+
+
+def get_ohlcv_history(
+    symbol: str,
+    period: str = "2y",
+    interval: str = "1d",
+) -> pd.DataFrame:
+    """Return raw Yahoo OHLCV data through a stable, provider-neutral shape.
+
+    This is additive to ``get_price_history`` so the existing Streamlit UI keeps
+    its close-only contract. Validation and completed-bar decisions belong to
+    the analysis provider layer.
+    """
+
+    empty = pd.DataFrame(columns=OHLCV_COLUMNS)
+    try:
+        ticker = yf.Ticker(symbol)
+        history = ticker.history(
+            period=period,
+            interval=interval,
+            auto_adjust=False,
+            back_adjust=False,
+            actions=True,
+            repair=False,
+            keepna=True,
+            prepost=False,
+            rounding=False,
+            timeout=10,
+        )
+    except Exception as exc:
+        _log_external_failure("OHLCV history lookup", exc)
+        return empty
+
+    required = {"Open", "High", "Low", "Close", "Volume"}
+    if history.empty or not required.issubset(history.columns):
+        return empty
+
+    history = history.reset_index()
+    timestamp_column = next(
+        (column for column in ("Datetime", "Date") if column in history),
+        None,
+    )
+    if timestamp_column is None:
+        return empty
+
+    history = history.rename(columns={timestamp_column: "Timestamp"})
+    for action_column in ("Dividends", "Stock Splits"):
+        if action_column not in history:
+            history[action_column] = 0.0
+
+    result = history[OHLCV_COLUMNS].copy()
+    for column in OHLCV_COLUMNS[1:]:
+        result[column] = pd.to_numeric(result[column], errors="coerce")
+    # Keep questionable numeric rows for the analysis contract to reject. Silent
+    # omission would hide a data-quality failure and change indicator windows.
+    result = result.dropna(subset=["Timestamp"])
+    return result.reset_index(drop=True)
 
 
 def search_symbols(query: str, limit: int = 10) -> list[dict[str, str]]:

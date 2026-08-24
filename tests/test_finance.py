@@ -80,6 +80,37 @@ class FinanceTests(unittest.TestCase):
         self.assertEqual(list(history.columns), ["Date", "Close"])
         self.assertEqual(history["Close"].tolist(), [100.0, 101.0])
 
+    def test_ohlcv_history_preserves_legacy_contract_and_disables_adjustments(self) -> None:
+        ticker = MagicMock()
+        ticker.history.return_value = pd.DataFrame(
+            {
+                "Open": [100.0],
+                "High": [102.0],
+                "Low": [99.0],
+                "Close": [101.0],
+                "Volume": [1_000],
+            },
+            index=pd.DatetimeIndex(["2026-08-14"], name="Date"),
+        )
+
+        with patch("finance.yf.Ticker", return_value=ticker):
+            ohlcv = finance.get_ohlcv_history("AAPL")
+
+        self.assertEqual(list(ohlcv.columns), finance.OHLCV_COLUMNS)
+        self.assertEqual(ohlcv.loc[0, "Close"], 101.0)
+        ticker.history.assert_called_once_with(
+            period="2y",
+            interval="1d",
+            auto_adjust=False,
+            back_adjust=False,
+            actions=True,
+            repair=False,
+            keepna=True,
+            prepost=False,
+            rounding=False,
+            timeout=10,
+        )
+
     def test_symbol_search_filters_incomplete_results(self) -> None:
         payload = json.dumps(
             {

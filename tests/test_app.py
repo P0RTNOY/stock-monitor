@@ -4,15 +4,19 @@ import logging
 import tempfile
 import unittest
 from contextlib import ExitStack, contextmanager
+from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Iterator
 from unittest.mock import patch
 
 import pandas as pd
+import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 import db
+from analysis.providers import ProviderError
+from tests.analysis_helpers import make_bar
 
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
@@ -27,9 +31,11 @@ class StreamlitJournalWorkflowTests(unittest.TestCase):
         self.original_db_path = db.DB_PATH
         db.DB_PATH = Path(self.temp_dir.name) / "journal.db"
         db.init_db()
+        st.cache_data.clear()
 
     def tearDown(self) -> None:
         db.DB_PATH = self.original_db_path
+        st.cache_data.clear()
         self.temp_dir.cleanup()
 
     @staticmethod
@@ -123,6 +129,114 @@ class StreamlitJournalWorkflowTests(unittest.TestCase):
         self.assertEqual(len(app.exception), 0)
         symbols = {row["symbol"] for row in db.get_logs_by_date(today)}
         self.assertIn("OLD", symbols)
+
+    def test_scenario_analysis_is_explicit_and_survives_unrelated_rerun(self) -> None:
+        bars = tuple(
+            replace(
+                make_bar(index, close=100 + index, high=101 + index, low=99 + index),
+                symbol="GOOGL",
+            )
+            for index in range(220)
+        )
+        with self._offline_integrations(), patch(
+            "analysis.providers.YahooFinanceProvider.fetch_daily_bars",
+            return_value=bars,
+        ) as fetch_bars:
+            app = AppTest.from_file(APP_PATH, default_timeout=10).run()
+            fetch_bars.assert_not_called()
+
+            analyze_button = next(
+                button for button in app.button if button.label == "Analyze completed bars"
+            )
+            analyze_button.click()
+            app.run()
+            fetch_bars.assert_called_once()
+            self.assertEqual(len(app.exception), 0)
+            scenario_tab = next(tab for tab in app.tabs if tab.label == "Scenario Analysis")
+            self.assertTrue(
+                any(
+                    "No rectangle setup detected" in item.value
+                    for item in scenario_tab.markdown
+                ),
+                [item.value for item in scenario_tab.markdown],
+            )
+
+            app.date_input[0].set_value(date.today() - timedelta(days=1))
+            app.run()
+            fetch_bars.assert_called_once()
+            self.assertTrue(
+                any(
+                    "No rectangle setup detected" in item.value
+                    for item in scenario_tab.markdown
+                )
+            )
+
+    def test_scenario_analysis_provider_failure_is_safe(self) -> None:
+        with self._offline_integrations(), patch(
+            "analysis.providers.YahooFinanceProvider.fetch_daily_bars",
+            side_effect=ProviderError("DO_NOT_RENDER_UPSTREAM_DETAIL"),
+        ):
+            app = AppTest.from_file(APP_PATH, default_timeout=10).run()
+            analyze_button = next(
+                button for button in app.button if button.label == "Analyze completed bars"
+            )
+            analyze_button.click()
+            app.run()
+
+        self.assertEqual(len(app.exception), 0)
+        warning_text = " ".join(item.value for item in app.warning)
+        self.assertIn("Completed OHLCV data is not available", warning_text)
+        self.assertNotIn("DO_NOT_RENDER_UPSTREAM_DETAIL", warning_text)
+
+    def test_scenario_analysis_renders_rectangle_lifecycle_and_risk_table(self) -> None:
+        bars = [
+            replace(
+                make_bar(index, close=105, high=106, low=104, volume=1_000),
+                symbol="GOOGL",
+            )
+            for index in range(209)
+        ]
+        for index, high, low in (
+            (185, 110, 104),
+            (190, 106, 100),
+            (200, 110, 104),
+            (205, 106, 100),
+        ):
+            bars[index] = replace(
+                make_bar(index, close=105, high=high, low=low, volume=1_000),
+                symbol="GOOGL",
+            )
+        bars[208] = replace(
+            make_bar(208, close=111.6, high=112, low=110.5, volume=2_000),
+            symbol="GOOGL",
+        )
+
+        with self._offline_integrations(), patch(
+            "analysis.providers.YahooFinanceProvider.fetch_daily_bars",
+            return_value=tuple(bars),
+        ):
+            app = AppTest.from_file(APP_PATH, default_timeout=10).run()
+            analyze_button = next(
+                button for button in app.button if button.label == "Analyze completed bars"
+            )
+            analyze_button.click()
+            app.run()
+
+        self.assertEqual(len(app.exception), 0)
+        scenario_tab = next(tab for tab in app.tabs if tab.label == "Scenario Analysis")
+        self.assertTrue(
+            any("Rectangle scenario available" in item.value for item in scenario_tab.markdown)
+        )
+        metric_values = {metric.label: metric.value for metric in scenario_tab.metric}
+        self.assertEqual(metric_values["Lifecycle"], "confirmed")
+        self.assertEqual(metric_values["Direction"], "bullish")
+        risk_tables = [
+            dataframe.value
+            for dataframe in scenario_tab.dataframe
+            if set(dataframe.value.columns) == {"Metric", "Value"}
+        ]
+        self.assertEqual(len(risk_tables), 1)
+        self.assertIn("Risk per unit including costs", set(risk_tables[0]["Metric"]))
 
 
 if __name__ == "__main__":

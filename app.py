@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import logging
 from io import BytesIO
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
+from analysis import AnalysisEngine, AnalysisRequest
+from analysis.contracts import ContractError
+from analysis.providers import ProviderError, YahooFinanceProvider
 from ai import summarize_daily_log, summarize_journal_habits
 from db import (
     add_watchlist_stock,
@@ -40,6 +44,7 @@ from models import DIRECTIONS, TRIGGER_CONDITIONS
 from news import get_stock_headlines
 
 
+LOGGER = logging.getLogger(__name__)
 load_dotenv()
 init_db()
 
@@ -327,6 +332,14 @@ def _cached_stock_headlines(
     return get_stock_headlines(symbol, company_name)
 
 
+@st.cache_data(ttl=900, max_entries=64, show_spinner=False)
+def _cached_analysis_bars(symbol: str):
+    return YahooFinanceProvider().fetch_daily_bars(
+        symbol,
+        datetime.now(timezone.utc),
+    )
+
+
 if "prices" not in st.session_state:
     st.session_state.prices = _default_prices()
 if "quote_snapshots" not in st.session_state:
@@ -339,6 +352,8 @@ if "forecast_drafts" not in st.session_state:
     st.session_state.forecast_drafts = {}
 if "symbol_search_results" not in st.session_state:
     st.session_state.symbol_search_results = []
+if "analysis_reports" not in st.session_state:
+    st.session_state.analysis_reports = {}
 if "journal_notice" in st.session_state:
     st.success(st.session_state.pop("journal_notice"))
 
@@ -605,8 +620,8 @@ with context_control_col_2:
 selected_stock = stock_options[selected_context_label]
 selected_symbol = selected_stock["symbol"]
 
-chart_tab, indicators_tab, headlines_tab = st.tabs(
-    ["Price Chart", "Technical Context", "Headlines"]
+chart_tab, indicators_tab, scenario_tab, headlines_tab = st.tabs(
+    ["Price Chart", "Technical Context", "Scenario Analysis", "Headlines"]
 )
 
 with chart_tab:
@@ -650,6 +665,217 @@ with indicators_tab:
         ]
     )
     st.dataframe(indicator_df, width="stretch", hide_index=True)
+
+with scenario_tab:
+    st.caption(
+        "Descriptive completed-bar scenario evidence only. This is not a signal, "
+        "recommendation, or prediction."
+    )
+    st.caption(
+        "Ruleset v1 is a prototype for US-listed liquid large-cap stocks and broad/sector ETFs."
+    )
+    risk_col, commission_col, slippage_col, stop_col = st.columns(4)
+    with risk_col:
+        analysis_risk_budget = st.number_input(
+            "Account risk amount (optional)",
+            min_value=0.0,
+            value=0.0,
+            step=100.0,
+            key=f"analysis_risk_{selected_symbol}",
+            help="Maximum hypothetical monetary loss used only for position-size arithmetic.",
+        )
+    with commission_col:
+        analysis_commission = st.number_input(
+            "Commission per unit",
+            min_value=0.0,
+            value=0.0,
+            step=0.01,
+            key=f"analysis_commission_{selected_symbol}",
+        )
+    with slippage_col:
+        analysis_slippage = st.number_input(
+            "Expected slippage per unit",
+            min_value=0.0,
+            value=0.0,
+            step=0.01,
+            key=f"analysis_slippage_{selected_symbol}",
+        )
+    with stop_col:
+        analysis_stop_override = st.number_input(
+            "Execution-stop assumption (optional)",
+            min_value=0.0,
+            value=0.0,
+            step=0.1,
+            key=f"analysis_stop_{selected_symbol}",
+            help=(
+                "Zero shows only the ruleset's research stop geometry. Enter an explicit "
+                "positive stop to enable position sizing when all other inputs are supplied."
+            ),
+        )
+
+    if st.button(
+        "Analyze completed bars",
+        type="primary",
+        width="stretch",
+        key=f"run_analysis_{selected_symbol}",
+    ):
+        try:
+            with st.spinner("Analyzing completed daily and weekly bars..."):
+                analysis_as_of = datetime.now(timezone.utc)
+                analysis_bars = _cached_analysis_bars(selected_symbol)
+                analysis_request = AnalysisRequest(
+                    symbol=selected_symbol,
+                    as_of=analysis_as_of,
+                    account_risk=(analysis_risk_budget or None),
+                    commission_per_unit=analysis_commission,
+                    expected_slippage_per_unit=analysis_slippage,
+                    execution_stop_price=(analysis_stop_override or None),
+                )
+                analysis_report = AnalysisEngine().analyze(
+                    analysis_request,
+                    analysis_bars,
+                )
+            st.session_state.analysis_reports[selected_symbol] = analysis_report.to_dict()
+        except ProviderError:
+            st.warning("Completed OHLCV data is not available for this symbol right now.")
+        except ContractError:
+            st.warning("Market data did not pass the scenario-analysis validation checks.")
+        except Exception as exc:
+            LOGGER.warning("Scenario analysis failed (%s)", type(exc).__name__)
+            st.warning("Scenario analysis is temporarily unavailable.")
+
+    report_data = st.session_state.analysis_reports.get(selected_symbol)
+    if report_data is None:
+        st.info("Select the button above to evaluate the current completed-bar context.")
+    else:
+        status_labels = {
+            "no_setup": "No rectangle setup detected",
+            "scenario_detected": "Rectangle scenario available",
+            "insufficient_data": "Insufficient completed data",
+        }
+        st.markdown(f"#### {status_labels.get(report_data['status'], 'Analysis result')}")
+        st.write(report_data["summary"])
+        st.caption(
+            f"Ruleset {report_data['ruleset_version']} · Engine {report_data['engine_version']} · "
+            f"Provider {report_data['provider']} · {report_data['adjustment_mode']} prices · "
+            f"Generated {report_data['generated_at']}"
+        )
+        for warning in report_data.get("warnings", []):
+            st.warning(warning)
+
+        timeframe_rows = []
+        level_rows = []
+        for timeframe, context in report_data.get("timeframes", {}).items():
+            timeframe_rows.append(
+                {
+                    "Timeframe": timeframe,
+                    "Structure": context["structure"]["trend"],
+                    "Reason": context["structure"]["reason"],
+                    "Completed bars": context["bar_count"],
+                    "Data through": context["last_bar"],
+                    "ATR": context["atr"],
+                    "Relative volume": context["relative_volume"],
+                    "SMA 20": context["moving_averages"].get("sma_20"),
+                    "SMA 50": context["moving_averages"].get("sma_50"),
+                    "SMA 200": context["moving_averages"].get("sma_200"),
+                }
+            )
+            for level in context.get("levels", []):
+                level_rows.append(
+                    {
+                        "Timeframe": timeframe,
+                        "Role": level["role"],
+                        "Lower": level["lower"],
+                        "Upper": level["upper"],
+                        "Touches": level["touch_count"],
+                        "Distance % (absolute)": level["distance_from_close_pct"],
+                        "Last touch": level["last_touch"],
+                    }
+                )
+        st.markdown("##### Structure and context")
+        st.dataframe(pd.DataFrame(timeframe_rows), width="stretch", hide_index=True)
+        if level_rows:
+            st.markdown("##### Confirmed price zones")
+            st.dataframe(pd.DataFrame(level_rows), width="stretch", hide_index=True)
+
+        scenarios = report_data.get("scenarios", [])
+        if not scenarios:
+            st.info("The configured rectangle rules did not identify a current lifecycle record.")
+        for scenario in scenarios:
+            st.markdown("##### Rectangle lifecycle")
+            scenario_metrics = st.columns(4)
+            scenario_metrics[0].metric("Lifecycle", scenario["lifecycle_state"])
+            scenario_metrics[1].metric("Direction", scenario["direction"])
+            scenario_metrics[2].metric(
+                "Range",
+                f"${scenario['range_lower']:,.2f}–${scenario['range_upper']:,.2f}",
+            )
+            scenario_metrics[3].metric(
+                "Measured target",
+                _format_price(scenario["measured_target"]),
+            )
+            st.caption(
+                f"Established {scenario['established_at']} · "
+                f"Last event {scenario['last_event_at']}"
+                + (
+                    f" · Retested {scenario['retested_at']}"
+                    if scenario.get("retested_at")
+                    else ""
+                )
+                + (
+                    f" · Terminal {scenario['terminal_at']}"
+                    if scenario.get("terminal_at")
+                    else ""
+                )
+            )
+            st.write(f"**Confirmation:** {scenario['confirmation_condition']}")
+            st.write(f"**Entry assumption:** {scenario['entry_trigger']}")
+            st.write(f"**Analytical invalidation:** {scenario['analytical_invalidation']}")
+            risk = scenario.get("risk")
+            if risk:
+                risk_rows = [
+                    {"Metric": "Entry price assumption", "Value": _format_price(risk["entry_price"])},
+                    {"Metric": "Execution-stop assumption", "Value": _format_price(risk["execution_stop_price"])},
+                    {"Metric": "Risk per unit including costs", "Value": _format_price(risk["risk_per_unit"])},
+                    {
+                        "Metric": "Measured reward per unit",
+                        "Value": _format_price(risk["reward_per_unit"]),
+                    },
+                    {
+                        "Metric": "Measured reward/risk",
+                        "Value": (
+                            "Unavailable"
+                            if risk["reward_risk_ratio"] is None
+                            else f"{risk['reward_risk_ratio']:.2f}"
+                        ),
+                    },
+                    {
+                        "Metric": "Hypothetical position size",
+                        "Value": "Unavailable" if risk["position_size"] is None else str(risk["position_size"]),
+                    },
+                ]
+                st.markdown("##### Hypothetical risk arithmetic")
+                st.dataframe(pd.DataFrame(risk_rows), width="stretch", hide_index=True)
+            for warning in scenario.get("warnings", []):
+                st.warning(warning)
+
+        quality_evidence = [
+            {
+                "Rule": item["rule_id"],
+                "Category": item["category"],
+                "Status": item["status"],
+                "Explanation": item["explanation"],
+            }
+            for item in report_data.get("evidence", [])
+            if item["status"] in {"failed", "warning", "unknown"}
+        ]
+        if quality_evidence:
+            with st.expander("Evidence requiring attention"):
+                st.dataframe(
+                    pd.DataFrame(quality_evidence),
+                    width="stretch",
+                    hide_index=True,
+                )
 
 with headlines_tab:
     headlines = _cached_stock_headlines(

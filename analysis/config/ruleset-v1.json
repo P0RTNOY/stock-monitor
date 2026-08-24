@@ -1,0 +1,60 @@
+{
+  "version": "ruleset-v1",
+  "description": "Initial engineering defaults for explainable structure and levels; these are not universal claims from the reference guide.",
+  "market_scope": [
+    "US-listed liquid large-cap equities",
+    "US-listed liquid broad and sector ETFs"
+  ],
+  "provider": "yahoo-finance-prototype",
+  "adjustment_mode": "raw",
+  "timeframes": ["1wk", "1d"],
+  "minimum_bars": {
+    "1d": 60,
+    "1wk": 26
+  },
+  "features": {
+    "atr_period": 14,
+    "relative_volume_lookback": 20,
+    "moving_average_periods": [20, 50, 200]
+  },
+  "swings": {
+    "mode": "left_right_confirmed",
+    "left_bars": 2,
+    "right_bars": 2
+  },
+  "levels": {
+    "width_atr_multiple": 0.35,
+    "minimum_width_percent": 0.005,
+    "minimum_touches": 2,
+    "maximum_zones": 3
+  },
+  "rectangles": {
+    "lookback_bars": 60,
+    "minimum_formation_bars": 15,
+    "minimum_touch_separation_bars": 5,
+    "minimum_touches_per_side": 2,
+    "minimum_side_alternations": 3,
+    "touch_tolerance_atr": 0.35,
+    "touch_tolerance_percent": 0.005,
+    "minimum_height_atr": 2.0,
+    "minimum_height_percent": 0.03,
+    "maximum_height_atr": 12.0,
+    "maximum_side_drift_fraction": 0.10,
+    "minimum_containment_ratio": 0.90,
+    "maximum_consecutive_outside_closes": 1,
+    "breakout_distance_atr": 0.25,
+    "breakout_distance_percent": 0.005,
+    "minimum_relative_volume": 1.25,
+    "retest_tolerance_atr": 0.25,
+    "retest_tolerance_percent": 0.003,
+    "maximum_retest_bars": 10,
+    "invalidation_buffer_atr": 0.10,
+    "invalidation_buffer_percent": 0.002,
+    "candidate_expiration_bars": 20,
+    "confirmed_expiration_bars": 30
+  },
+  "risk": {
+    "execution_stop_atr_buffer": 0.25,
+    "minimum_reward_risk": 1.5
+  }
+}

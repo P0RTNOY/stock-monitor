@@ -46,22 +46,41 @@ Phase 2C1 implements the default-disabled scheduled-operations boundary defined 
 
 Remote D1 migration, deployed provider behavior, Cron activation, and Cloudflare plan limits remain deliberately unverified. The fixed profile also remains a migration seam rather than an authenticated tenant boundary.
 
-## Phase 2C2 — exact next step
+## Phase 2C2A — complete
 
-Add notification delivery only after defining a durable outbox boundary:
+Phase 2C2A implements the durable notification outbox foundation defined in [`forecast-notification-outbox-phase-2c2a.md`](forecast-notification-outbox-phase-2c2a.md):
 
-1. Derive outbox entries from persisted trusted forecast/evaluation events, never scheduler logs or browser-supplied results.
-2. Define consent, user preferences, quiet hours, and channel-specific delivery policy.
-3. Add deterministic deduplication keys, retry/backoff policy, and append-preserving delivery attempts/history.
-4. Keep outbox creation separate from channel delivery and never send directly inside the Phase 2C1 page loop.
-5. Add email, push, webhook, SMS, Slack, or other adapters only behind that policy and audit boundary.
+- profile-scoped projection from authoritative persisted Phase 2A evaluation runs and review items, without reevaluation or market-data access;
+- support for `target_hit`, `invalidated`, `expired`, and `needs_review`, with `no_change` and operational failures explicitly excluded;
+- canonical bounded payload snapshots, deterministic intent/deduplication identities, and database-enforced replay/concurrency uniqueness;
+- stable evaluation-run keyset cursors, injected cutoffs, bounded pages, durable projection classifications, and crash-safe checkpoint advancement;
+- a first-run profile baseline that prevents existing evaluations or unresolved review items from becoming an accidental historical flood;
+- profile-scoped append-preserved preference revisions with default no consent, category settings, validated IANA timezones, and no recipient fields;
+- persisted policy decisions and deterministic Temporal-based quiet-hour calculation across same-day, overnight, daylight-saving gap, and overlap cases;
+- channel-neutral outbox states, deterministic bounded retries, expiring leases, stale-owner fencing, and append-preserved attempt history;
+- safe local dry-run/commit projection and read-only status command boundaries, with historical inspection restricted to dry-run;
+- additive migration `market-monitor-web/drizzle/0006_late_wasp.sql` without applying it remotely.
 
-Phase 2C2 must preserve Phase 2A evidence, Phase 2B coordination safety, and Phase 2C1 replay semantics. Authentication/tenant isolation and remote-runtime verification remain required before a public multi-user production launch.
+Phase 2C2A does not add an external provider, production template, verified recipient, browser notification API, notification dispatcher, Worker integration, or Cron. It leaves the Phase 2C1 Worker and schedule unchanged. Authentication/tenant isolation, remote D1 behavior, and deployed delivery remain unverified.
+
+## Phase 2C2B — exact next step
+
+Build delivery only behind the completed outbox boundary:
+
+1. Add authenticated verified recipients and explicit per-channel consent, revocation, and unsubscribe semantics; never invent an address, token, or URL from profile data.
+2. Add bounded informational templates that consume only the persisted versioned notification payload and cannot turn journal facts into trading advice.
+3. Implement one explicitly configured provider adapter with sanitized results and provider idempotency keys; do not accept arbitrary webhook destinations.
+4. Recheck current consent immediately before every provider call so revocation suppresses unsent pending work, while later opt-in never releases an old suppressed decision.
+5. Add a separately configured, default-disabled dispatcher with bounded claims, lease renewal/takeover, retry execution, dead-letter inspection, structured observability, and a kill switch. Do not send from the Phase 2C1 coordinator loop.
+6. Define and test reconciliation for the external ambiguity where a provider accepts a message but the local success write fails. Do not claim exactly-once delivery without provider evidence.
+7. Verify migration `0006`, provider credentials, remote D1 concurrency, deployed runtime limits, alerting, rollback, and consent behavior in staging before any production enablement.
+
+Phase 2C2B must preserve Phase 2A evidence, Phase 2B coordination safety, Phase 2C1 replay semantics, and Phase 2C2A intent identity. Additional channels, an in-app notification center, unread state, global analytics, authentication beyond the recipient boundary, and public multi-user operation remain later work unless separately designed and authorized.
 
 ## Later sequence
 
 1. **Production coordination and delivery**
-   - Complete Phase 2C2 notification boundaries and the remaining authentication/remote-runtime verification above.
+   - Complete Phase 2C2B verified delivery and the remaining authentication/remote-runtime verification above.
    - Preserve bounded execution, replay safety, and duplicate-delivery protection.
 
 2. **Accuracy and calibration analytics**

@@ -147,6 +147,7 @@ export interface EmailDispatcherRepository {
     deliveryId: string;
     providerAttemptId: string;
     recipientId: string;
+    unsubscribeCapabilityId: string;
     notificationPreferenceRevision: number;
     emailConsentRevision: number;
     templateKind: NotificationCategory;
@@ -547,7 +548,7 @@ export class ForecastEmailDispatcherService {
         };
       }
       if (policy.recipientId === null || policy.notificationPreferenceRevision === null
-        || policy.emailConsentRevision === null) {
+        || policy.emailConsentRevision === null || !context.unsubscribeCapability) {
         throw new EmailDispatcherContractError('Eligible pre-send policy is incomplete.');
       }
 
@@ -625,6 +626,7 @@ export class ForecastEmailDispatcherService {
         deliveryId,
         providerAttemptId,
         recipientId: policy.recipientId,
+        unsubscribeCapabilityId: context.unsubscribeCapability.id,
         notificationPreferenceRevision: policy.notificationPreferenceRevision,
         emailConsentRevision: policy.emailConsentRevision,
         templateKind: context.category,

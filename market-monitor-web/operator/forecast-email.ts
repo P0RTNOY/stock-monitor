@@ -91,7 +91,7 @@ Required:
   --cutoff <UTC>  Canonical UTC instant with milliseconds and Z
 
 Options:
-  --limit <1-${MAX_OPERATOR_LIMIT}>  Maximum outbox items (default: ${DEFAULT_EMAIL_DISPATCH_LIMIT})
+  --limit <1-${MAX_OPERATOR_LIMIT}>  Maximum outbox items (configured default; ${DEFAULT_EMAIL_DISPATCH_LIMIT} when unset)
   --dry-run       Preview only; this is the default
   --send-live     Permit real provider calls after every server-side gate passes
   --json          Print stable machine-readable JSON
@@ -304,7 +304,14 @@ export function parseVerificationSendArgs(argv: string[]): VerificationSendOpera
   };
 }
 
-export type DispatchOperatorOptions = VerificationSendOperatorOptions & { limit: number };
+export type DispatchOperatorOptions = VerificationSendOperatorOptions & { limit?: number };
+
+export function resolveDispatchLimit(
+  options: Pick<DispatchOperatorOptions, 'limit'>,
+  configuration: Pick<EmailConfiguration, 'dispatcherLimit'>,
+) {
+  return options.limit ?? configuration.dispatcherLimit;
+}
 
 export function parseDispatchArgs(argv: string[]): DispatchOperatorOptions {
   const values = parseFlags(
@@ -313,13 +320,15 @@ export function parseDispatchArgs(argv: string[]): DispatchOperatorOptions {
     new Set(['--dry-run', '--send-live', '--json', '--help']),
   );
   if (helpOnly(values)) {
-    return { help: true, json: false, mode: 'dry_run', limit: DEFAULT_EMAIL_DISPATCH_LIMIT };
+    return { help: true, json: false, mode: 'dry_run' };
   }
   return {
     help: false,
     json: values.has('--json'),
     cutoff: canonicalCutoff(values.get('--cutoff')),
-    limit: wholeNumber(values.get('--limit'), '--limit', DEFAULT_EMAIL_DISPATCH_LIMIT),
+    ...(values.has('--limit')
+      ? { limit: wholeNumber(values.get('--limit'), '--limit', DEFAULT_EMAIL_DISPATCH_LIMIT) }
+      : {}),
     mode: parseSendMode(values),
   };
 }
@@ -883,13 +892,14 @@ export async function invokeDispatchOperator(options: DispatchOperatorOptions): 
       leaseExpiresAt: (acquiredAt) => new Date(Date.parse(acquiredAt) + 60_000).toISOString(),
       id: (kind) => `${kind}-${uuid()}`,
     });
+    const effectiveLimit = resolveDispatchLimit(options, configuration);
     const report = await service.dispatch({
       profileId,
       cutoff: options.cutoff as string,
-      limit: options.limit,
+      limit: effectiveLimit,
       sendLive: options.mode === 'send_live',
     });
-    return visibleDispatchReport(report, options.limit);
+    return visibleDispatchReport(report, effectiveLimit);
   });
 }
 

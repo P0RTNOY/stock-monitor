@@ -368,6 +368,11 @@ CREATE UNIQUE INDEX `idx_forecast_email_suppression_events_id_profile` ON `forec
 CREATE UNIQUE INDEX `idx_forecast_email_suppression_events_provider_event` ON `forecast_email_suppression_events` (`provider_event_id`);--> statement-breakpoint
 CREATE INDEX `idx_forecast_email_suppression_events_recipient_occurred` ON `forecast_email_suppression_events` (`profile_id`,`recipient_id`,`occurred_at`,`id`);--> statement-breakpoint
 PRAGMA foreign_keys=OFF;--> statement-breakpoint
+CREATE TABLE `__backup_forecast_notification_delivery_attempts` AS
+SELECT "id", "outbox_id", "profile_id", "attempt_number", "owner_token", "state",
+  "retry_policy_version", "adapter_kind", "adapter_version", "started_at", "finished_at",
+  "failure_classification", "redacted_error_category", "next_attempt_at", "created_at"
+FROM `forecast_notification_delivery_attempts`;--> statement-breakpoint
 CREATE TABLE `__new_forecast_notification_delivery_attempts` (
 	`id` text PRIMARY KEY NOT NULL,
 	`outbox_id` text NOT NULL,
@@ -493,4 +498,13 @@ CREATE UNIQUE INDEX `idx_forecast_notification_outbox_lease_token` ON `forecast_
 CREATE INDEX `idx_forecast_notification_outbox_profile_state_available` ON `forecast_notification_outbox` (`profile_id`,`state`,`available_at`,`id`);--> statement-breakpoint
 CREATE INDEX `idx_forecast_notification_outbox_state_lease` ON `forecast_notification_outbox` (`state`,`lease_expires_at`);
 --> statement-breakpoint
+INSERT OR IGNORE INTO `forecast_notification_delivery_attempts`
+  ("id", "outbox_id", "profile_id", "attempt_number", "owner_token", "state",
+   "retry_policy_version", "adapter_kind", "adapter_version", "started_at", "finished_at",
+   "failure_classification", "redacted_error_category", "next_attempt_at", "created_at")
+SELECT "id", "outbox_id", "profile_id", "attempt_number", "owner_token", "state",
+  "retry_policy_version", "adapter_kind", "adapter_version", "started_at", "finished_at",
+  "failure_classification", "redacted_error_category", "next_attempt_at", "created_at"
+FROM `__backup_forecast_notification_delivery_attempts`;--> statement-breakpoint
+DROP TABLE `__backup_forecast_notification_delivery_attempts`;--> statement-breakpoint
 PRAGMA foreign_keys=ON;

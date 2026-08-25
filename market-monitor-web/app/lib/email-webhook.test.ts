@@ -52,6 +52,14 @@ class SQLitePrepared {
     return (this.database.prepare(this.sql).get(...this.bindings) ?? null) as T | null;
   }
 
+  async all<T>() {
+    return {
+      success: true,
+      results: this.database.prepare(this.sql).all(...this.bindings) as T[],
+      meta: {},
+    };
+  }
+
   async run() { return this.execute(); }
 
   execute() {
@@ -440,6 +448,46 @@ test('D1 reconciliation records an unknown provider email without revealing or m
   database.close();
 });
 
+test('D1 reconciliation applies a supported webhook that arrived before provider acceptance was persisted', async () => {
+  const database = webhookDatabase();
+  database.prepare(`UPDATE forecast_email_deliveries SET provider_email_id = NULL`).run();
+  const runtime = d1Harness(database);
+  const providerEmailId = '56761188-7520-42d8-8898-ff6fc54ce618';
+  const rawBody = officialEvent(
+    'email.failed', providerEmailId, '2026-08-25T17:59:00.000Z',
+  );
+  const first = await runtime.handler(request(rawBody, runtime.epochSeconds, {
+    webhookId: 'msg_before_acceptance',
+  }));
+  assert.equal(first.status, 200);
+  assert.equal(database.prepare(`SELECT handling_state AS state
+    FROM forecast_email_provider_events`).get()?.state, 'unknown_delivery');
+
+  database.prepare(`UPDATE forecast_email_deliveries SET provider_email_id = ?
+    WHERE id = 'delivery_1'`).run(providerEmailId);
+  const repository = new D1EmailWebhookRepository(
+    new SQLiteD1(database) as unknown as D1Database,
+  );
+  await repository.reconcilePendingForProviderEmail(providerEmailId);
+
+  assert.deepEqual({ ...database.prepare(`SELECT reconciliation_state AS state,
+      reconciliation_event_at AS eventAt FROM forecast_email_deliveries`).get() }, {
+    state: 'failed', eventAt: '2026-08-25T17:59:00.000Z',
+  });
+  assert.deepEqual({ ...database.prepare(`SELECT handling_state AS handlingState,
+      delivery_id AS deliveryId, profile_id AS profileId
+      FROM forecast_email_provider_events`).get() }, {
+    handlingState: 'applied', deliveryId: 'delivery_1', profileId: 1,
+  });
+  const replay = await runtime.handler(request(rawBody, runtime.epochSeconds, {
+    webhookId: 'msg_before_acceptance',
+  }));
+  assert.equal(replay.status, 200);
+  assert.equal(database.prepare(`SELECT COUNT(*) AS count
+    FROM forecast_email_provider_events`).get()?.count, 1);
+  database.close();
+});
+
 test('D1 precedence orders delivered versus failed by occurrence time, failure wins ties, and delayed cannot downgrade', async () => {
   {
     const database = webhookDatabase();
@@ -510,6 +558,37 @@ test('D1 bounce overrides delivery and appends durable recipient suppression evi
     action: 'suppressed', reason: 'hard_bounce', occurredAt: '2026-08-25T18:01:00.000Z',
   });
   database.close();
+});
+
+test('D1 permanent suppression evidence is ordered across bounce and provider-suppressed event types', async () => {
+  {
+    const database = webhookDatabase();
+    const runtime = d1Harness(database);
+    await runtime.handler(request(officialEvent('email.suppressed', undefined,
+      '2026-08-25T18:02:00.000Z'), runtime.epochSeconds, { webhookId: 'msg_new_suppressed' }));
+    await runtime.handler(request(officialEvent('email.bounced', undefined,
+      '2026-08-25T18:01:00.000Z'), runtime.epochSeconds, { webhookId: 'msg_old_bounced' }));
+    assert.equal(database.prepare(`SELECT reconciliation_state AS state
+      FROM forecast_email_deliveries`).get()?.state, 'suppressed');
+    assert.equal(database.prepare(`SELECT handling_state AS state
+      FROM forecast_email_provider_events WHERE event_type = 'email.bounced'`).get()?.state,
+    'ignored_precedence');
+    database.close();
+  }
+  {
+    const database = webhookDatabase();
+    const runtime = d1Harness(database);
+    await runtime.handler(request(officialEvent('email.bounced', undefined,
+      '2026-08-25T18:02:00.000Z'), runtime.epochSeconds, { webhookId: 'msg_new_bounced' }));
+    await runtime.handler(request(officialEvent('email.suppressed', undefined,
+      '2026-08-25T18:01:00.000Z'), runtime.epochSeconds, { webhookId: 'msg_old_suppressed' }));
+    assert.equal(database.prepare(`SELECT reconciliation_state AS state
+      FROM forecast_email_deliveries`).get()?.state, 'bounced');
+    assert.equal(database.prepare(`SELECT handling_state AS state
+      FROM forecast_email_provider_events WHERE event_type = 'email.suppressed'`).get()?.state,
+    'ignored_precedence');
+    database.close();
+  }
 });
 
 test('D1 complaint suppresses recipient and atomically appends a disabled consent revision', async () => {

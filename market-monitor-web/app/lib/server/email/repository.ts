@@ -31,6 +31,7 @@ import type {
 } from './recipient-service.ts';
 import type { EmailPreSendPolicyResult } from './presend-policy.ts';
 import type { ResendProviderIdentity, ResendSendResult } from './resend.ts';
+import { D1EmailWebhookRepository } from './webhook-repository.ts';
 import type {
   BeginVerificationProviderAttemptResult,
   VerificationDeliveryContext,
@@ -50,6 +51,13 @@ const RESEND_SAFE_RETRY_HOURS = 24;
 
 function changed(result: D1Result<unknown> | undefined) {
   return Number(result?.meta?.changes ?? 0);
+}
+
+function enabledCategoryColumn(alias: string, category: NotificationCategory) {
+  const column = category === 'target_hit' ? 'target_hit_enabled'
+    : category === 'invalidated' ? 'invalidated_enabled'
+      : category === 'expired' ? 'expired_enabled' : 'needs_review_enabled';
+  return `${alias}.${column}`;
 }
 
 type RecipientRow = {
@@ -715,9 +723,50 @@ export class D1EmailRepository implements EmailRecipientRepository, EmailDispatc
   private preSendInsert(input: {
     profileId: number; outboxId: string; notificationAttemptId: string;
     preSendDecisionId: string; checkedAt: string; policy: EmailPreSendPolicyResult;
-  }, ownerToken: string) {
+  }, ownerToken: string, authorization?: {
+    templateKind: NotificationCategory;
+    unsubscribeCapabilityId: string;
+  }) {
     const stored = input.policy.decision === 'eligible' ? 'eligible'
       : input.policy.decision === 'deferred_quiet_hours' ? 'deferred_quiet_hours' : 'suppressed';
+    if ((stored === 'eligible') !== Boolean(authorization)) {
+      throw new Error('EligibleEmailAuthorizationBoundaryMissing');
+    }
+    const notificationCategory = authorization
+      ? enabledCategoryColumn('npr', authorization.templateKind) : null;
+    const emailCategory = authorization
+      ? enabledCategoryColumn('ecr', authorization.templateKind) : null;
+    const authorizationSql = authorization ? `
+        AND EXISTS (SELECT 1 FROM forecast_email_recipients er
+          WHERE er.id = ? AND er.profile_id = ? AND er.state = 'verified'
+            AND er.verified_at IS NOT NULL AND er.revoked_at IS NULL
+            AND er.suppression_state = 'none'
+            AND er.verified_at <= (SELECT created_at FROM forecast_notification_outbox
+              WHERE id = ? AND profile_id = ?))
+        AND EXISTS (SELECT 1 FROM forecast_notification_preferences np
+          JOIN forecast_notification_preference_revisions npr
+            ON npr.profile_id = np.profile_id AND npr.revision = np.current_revision
+          WHERE np.profile_id = ? AND np.current_revision = ?
+            AND npr.preference_version = ? AND npr.master_consent = 1
+            AND ${notificationCategory} = 1)
+        AND EXISTS (SELECT 1 FROM forecast_email_consents ec
+          JOIN forecast_email_consent_revisions ecr
+            ON ecr.profile_id = ec.profile_id AND ecr.revision = ec.current_revision
+              AND ecr.recipient_id = ec.recipient_id
+          WHERE ec.profile_id = ? AND ec.current_revision = ? AND ec.recipient_id = ?
+            AND ecr.master_consent = 1 AND ${emailCategory} = 1
+            AND ecr.consented_at IS NOT NULL AND ecr.revoked_at IS NULL
+            AND ecr.consented_at <= (SELECT created_at FROM forecast_notification_outbox
+              WHERE id = ? AND profile_id = ?))
+        AND EXISTS (SELECT 1 FROM forecast_email_capabilities cap
+          WHERE cap.id = ? AND cap.profile_id = ? AND cap.recipient_id = ?
+            AND cap.purpose = 'unsubscribe' AND cap.state = 'active'
+            AND cap.token_version = ? AND cap.consent_revision = ?
+            AND cap.consumed_at IS NULL AND cap.revoked_at IS NULL)
+        AND EXISTS (SELECT 1 FROM forecast_notification_intents ni
+          JOIN forecast_notification_outbox no ON no.intent_id = ni.id
+            AND no.profile_id = ni.profile_id
+          WHERE no.id = ? AND no.profile_id = ? AND ni.category = ?)` : '';
     return this.d1.prepare(`INSERT INTO forecast_email_pre_send_decisions
       (id, outbox_id, attempt_id, profile_id, recipient_id,
        notification_preference_revision, email_consent_revision, decision,
@@ -728,13 +777,23 @@ export class D1EmailRepository implements EmailRecipientRepository, EmailDispatc
         AND lease_expires_at > ?)
         AND EXISTS (SELECT 1 FROM forecast_notification_delivery_attempts
           WHERE id = ? AND outbox_id = ? AND profile_id = ? AND owner_token = ?
-            AND state = 'started')`)
+            AND state = 'started')${authorizationSql}`)
       .bind(input.preSendDecisionId, input.outboxId, input.notificationAttemptId,
         input.profileId, input.policy.recipientId,
         input.policy.notificationPreferenceRevision, input.policy.emailConsentRevision,
         stored, input.policy.reason, input.checkedAt, input.policy.nextAvailableAt,
         input.checkedAt, input.outboxId, input.profileId, ownerToken, input.checkedAt,
-        input.notificationAttemptId, input.outboxId, input.profileId, ownerToken);
+        input.notificationAttemptId, input.outboxId, input.profileId, ownerToken,
+        ...(authorization ? [
+          input.policy.recipientId, input.profileId, input.outboxId, input.profileId,
+          input.profileId, input.policy.notificationPreferenceRevision,
+          NOTIFICATION_PREFERENCE_SCHEMA_VERSION,
+          input.profileId, input.policy.emailConsentRevision, input.policy.recipientId,
+          input.outboxId, input.profileId,
+          authorization.unsubscribeCapabilityId, input.profileId, input.policy.recipientId,
+          FORECAST_EMAIL_CAPABILITY_VERSION, input.policy.emailConsentRevision,
+          input.outboxId, input.profileId, authorization.templateKind,
+        ] : []));
   }
 
   async completePolicyOutcome(input: {
@@ -768,7 +827,8 @@ export class D1EmailRepository implements EmailRecipientRepository, EmailDispatc
   async beginProviderAttempt(input: {
     profileId: number; claim: EmailDispatchClaim; ownerToken: string;
     preSendDecisionId: string; deliveryId: string; providerAttemptId: string;
-    recipientId: string; notificationPreferenceRevision: number;
+    recipientId: string; unsubscribeCapabilityId: string;
+    notificationPreferenceRevision: number;
     emailConsentRevision: number; templateKind: NotificationCategory;
     templateVersion: string; locale: string; contentHash: string;
     identity: ResendProviderIdentity; startedAt: string;
@@ -807,7 +867,10 @@ export class D1EmailRepository implements EmailRecipientRepository, EmailDispatc
           profileId: input.profileId, outboxId: input.claim.outboxId,
           notificationAttemptId: input.claim.notificationAttemptId,
           preSendDecisionId: input.preSendDecisionId, checkedAt: input.startedAt, policy,
-        }, input.ownerToken),
+        }, input.ownerToken, {
+          templateKind: input.templateKind,
+          unsubscribeCapabilityId: input.unsubscribeCapabilityId,
+        }),
         this.d1.prepare(`INSERT INTO forecast_email_deliveries
           (id, profile_id, recipient_id, source_kind, outbox_id, pre_send_decision_id,
            verification_capability_id, template_kind, template_version, locale,
@@ -827,7 +890,10 @@ export class D1EmailRepository implements EmailRecipientRepository, EmailDispatc
         profileId: input.profileId, outboxId: input.claim.outboxId,
         notificationAttemptId: input.claim.notificationAttemptId,
         preSendDecisionId: input.preSendDecisionId, checkedAt: input.startedAt, policy,
-      }, input.ownerToken));
+      }, input.ownerToken, {
+        templateKind: input.templateKind,
+        unsubscribeCapabilityId: input.unsubscribeCapabilityId,
+      }));
       if (existing.state === 'request_started') {
         statements.push(this.d1.prepare(`UPDATE forecast_email_provider_attempts
           SET state = 'ambiguous', finished_at = ?, failure_classification = 'ambiguous',
@@ -875,6 +941,20 @@ export class D1EmailRepository implements EmailRecipientRepository, EmailDispatc
     profileId: number; outboxId: string; notificationAttemptId: string;
     ownerToken: string; deliveryId: string; completedAt: string;
   }) {
+    const accepted = await this.d1.prepare(`SELECT provider_email_id AS providerEmailId
+      FROM forecast_email_deliveries WHERE id = ? AND profile_id = ? AND outbox_id = ?
+        AND state = 'provider_accepted' AND provider_email_id IS NOT NULL`)
+      .bind(input.deliveryId, input.profileId, input.outboxId)
+      .first<{ providerEmailId: string }>();
+    if (!accepted) return false;
+    try {
+      await new D1EmailWebhookRepository(this.d1)
+        .reconcilePendingForProviderEmail(accepted.providerEmailId);
+    } catch {
+      // Provider acceptance is already durable. Leave the notification claim
+      // recoverable instead of losing an earlier webhook or retrying the send.
+      return false;
+    }
     const results = await this.d1.batch([
       this.d1.prepare(`UPDATE forecast_notification_delivery_attempts
         SET state = 'succeeded', finished_at = ?
@@ -1295,13 +1375,22 @@ export class D1VerificationEmailRepository implements VerificationEmailDeliveryR
     profileId: number; recipientId: string; capabilityId: string;
     deliveryId: string; completedAt: string;
   }) {
-    const row = await this.d1.prepare(`SELECT 1 AS accepted
+    const row = await this.d1.prepare(`SELECT provider_email_id AS providerEmailId
       FROM forecast_email_deliveries WHERE id = ? AND profile_id = ?
         AND recipient_id = ? AND verification_capability_id = ?
         AND state = 'provider_accepted' AND provider_email_id IS NOT NULL`)
       .bind(input.deliveryId, input.profileId, input.recipientId, input.capabilityId)
-      .first<{ accepted: number }>();
-    return row?.accepted === 1;
+      .first<{ providerEmailId: string }>();
+    if (!row) return false;
+    try {
+      await new D1EmailWebhookRepository(this.d1)
+        .reconcilePendingForProviderEmail(row.providerEmailId);
+      return true;
+    } catch {
+      // The accepted delivery remains the recovery marker. A later invocation
+      // can retry webhook reconciliation without issuing another provider send.
+      return false;
+    }
   }
 
   async recordProviderAcceptance(input: {
@@ -1331,6 +1420,13 @@ export class D1VerificationEmailRepository implements VerificationEmailDeliveryR
           input.identity.idempotencyKey, input.identity.canonicalRequestHash),
     ]);
     if (changed(results[0]) !== 1 || changed(results[1]) !== 1) return 'integrity_conflict';
+    if (!await this.finalizeAcceptedRecovery({
+      profileId: input.profileId,
+      recipientId: input.recipientId,
+      capabilityId: input.capabilityId,
+      deliveryId: input.deliveryId,
+      completedAt: input.acceptedAt,
+    })) return 'accepted_context_changed';
     const current = await this.d1.prepare(`SELECT 1 AS valid
       FROM forecast_email_recipients r JOIN forecast_email_capabilities c
         ON c.recipient_id = r.id AND c.profile_id = r.profile_id

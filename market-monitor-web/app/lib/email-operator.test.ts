@@ -17,6 +17,7 @@ import {
   renderEmailStatusHuman,
   renderRecipientHuman,
   renderVerificationSendHuman,
+  resolveDispatchLimit,
   runDispatchOperator,
   runRecipientOperator,
   type ConsentOperatorReport,
@@ -216,13 +217,19 @@ test('verification and forecast dispatch are dry-run by default and require stri
     help: false, json: true, cutoff, mode: 'send_live',
   });
   assert.deepEqual(parseDispatchArgs(['--cutoff', cutoff]), {
-    help: false, json: false, cutoff, limit: 10, mode: 'dry_run',
+    help: false, json: false, cutoff, mode: 'dry_run',
   });
   assert.deepEqual(parseDispatchArgs(['--cutoff', cutoff, '--limit', '50', '--send-live']), {
     help: false, json: false, cutoff, limit: 50, mode: 'send_live',
   });
   assert.match(VERIFICATION_SEND_USAGE, /DISPATCH_ENABLED=true/u);
   assert.match(DISPATCH_USAGE, /Dry-run never claims/u);
+  assert.equal(resolveDispatchLimit(parseDispatchArgs(['--cutoff', cutoff]), {
+    dispatcherLimit: 7,
+  }), 7);
+  assert.equal(resolveDispatchLimit(parseDispatchArgs([
+    '--cutoff', cutoff, '--limit', '4',
+  ]), { dispatcherLimit: 7 }), 4);
 
   for (const parse of [parseVerificationSendArgs, parseDispatchArgs]) {
     for (const argv of [

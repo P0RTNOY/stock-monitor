@@ -794,6 +794,59 @@ test('delivery service never claims without an adapter and uses only explicitly 
   db.close();
 });
 
+test('transactional 0007 migration preserves populated notification outbox and attempt history', async () => {
+  const migrated = new DatabaseSync(':memory:');
+  migrated.exec('PRAGMA foreign_keys = ON');
+  for (const migrationName of [
+    '0000_spotty_sugar_man.sql', '0001_kind_warbound.sql', '0002_quiet_gamora.sql',
+    '0003_great_xavin.sql', '0004_clean_next_avengers.sql', '0005_thin_ikaris.sql',
+    '0006_late_wasp.sql',
+  ]) {
+    const sql = readFileSync(new URL(`../../drizzle/${migrationName}`, import.meta.url), 'utf8');
+    for (const statement of sql.split('--> statement-breakpoint').map((value) => value.trim()).filter(Boolean)) {
+      migrated.exec(statement);
+    }
+  }
+  migrated.exec(`INSERT INTO investment_profiles VALUES
+    (1, 'Mine', 'USD', 0, '2026-01-01T00:00:00.000Z')`);
+  const runtime = new Runtime();
+  const { projector, repository } = services(migrated, runtime);
+  await establishBaseline(projector);
+  await new NotificationPreferenceService(repository).update({
+    trustedProfileId: 1, expectedRevision: 0, snapshot: preference(),
+    changeSource: 'operator', changeReason: 'migration regression',
+  });
+  insertSource(migrated, { createdAt: '2026-08-25T06:31:00.000Z' });
+  await projector.project(projection('commit'), 1);
+  const delivery = await new NotificationDeliveryService(repository, runtime).dispatchOne(1, {
+    kind: 'migration_test_adapter', version: 'test-1.0.0',
+    async deliver() { return { disposition: 'succeeded' }; },
+  });
+  assert.equal(delivery.disposition, 'succeeded');
+  assert.equal(count(migrated, 'forecast_notification_outbox'), 1);
+  assert.equal(count(migrated, 'forecast_notification_delivery_attempts'), 1);
+
+  const migration = readFileSync(new URL('../../drizzle/0007_late_amphibian.sql', import.meta.url), 'utf8');
+  migrated.exec('BEGIN');
+  try {
+    for (const statement of migration.split('--> statement-breakpoint')
+      .map((value) => value.trim()).filter(Boolean)) migrated.exec(statement);
+    migrated.exec('COMMIT');
+  } catch (error) {
+    migrated.exec('ROLLBACK');
+    throw error;
+  }
+
+  assert.equal(count(migrated, 'forecast_notification_outbox'), 1);
+  assert.equal(count(migrated, 'forecast_notification_delivery_attempts'), 1);
+  assert.deepEqual({ ...migrated.prepare(`SELECT state, finished_at AS finishedAt
+    FROM forecast_notification_delivery_attempts`).get() }, {
+    state: 'succeeded', finishedAt: NOW,
+  });
+  assert.deepEqual(migrated.prepare('PRAGMA foreign_key_check').all(), []);
+  migrated.close();
+});
+
 test('runtime DDL and generated migration agree for all notification tables', () => {
   const runtime = database();
   for (const statement of forecastInitializationStatements()) runtime.exec(statement);

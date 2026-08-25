@@ -444,11 +444,14 @@ export function forecastInitializationStatements() {
       last_attempt_at TEXT,
       succeeded_at TEXT,
       dead_lettered_at TEXT,
+      suppressed_at TEXT,
+      suppression_reason TEXT,
       last_failure_category TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       CHECK (attempt_count >= 0 AND (
-        (state IN ('pending', 'deferred', 'suppressed') AND attempt_count = 0)
+        (state = 'pending' AND attempt_count = 0)
+        OR (state IN ('deferred', 'suppressed') AND attempt_count >= 0)
         OR (state IN ('claimed', 'retry_scheduled', 'succeeded', 'dead_letter') AND attempt_count > 0)
       )),
       CHECK (state IN ('suppressed', 'succeeded', 'dead_letter') OR available_at IS NOT NULL),
@@ -458,6 +461,14 @@ export function forecastInitializationStatements() {
       ),
       CHECK ((state = 'succeeded' AND succeeded_at IS NOT NULL) OR (state <> 'succeeded' AND succeeded_at IS NULL)),
       CHECK ((state = 'dead_letter' AND dead_lettered_at IS NOT NULL) OR (state <> 'dead_letter' AND dead_lettered_at IS NULL)),
+      CHECK (
+        (state = 'suppressed' AND (
+          (suppressed_at IS NULL AND suppression_reason IS NULL)
+          OR (suppressed_at IS NOT NULL AND suppression_reason IS NOT NULL
+            AND length(suppression_reason) BETWEEN 1 AND 100)
+        ))
+        OR (state <> 'suppressed' AND suppressed_at IS NULL AND suppression_reason IS NULL)
+      ),
       FOREIGN KEY (intent_id, profile_id) REFERENCES forecast_notification_intents(id, profile_id) ON DELETE CASCADE,
       FOREIGN KEY (policy_decision_id, profile_id) REFERENCES forecast_notification_policy_decisions(id, profile_id) ON DELETE CASCADE
     )`,
@@ -498,7 +509,7 @@ export function forecastInitializationStatements() {
       profile_id INTEGER NOT NULL,
       attempt_number INTEGER NOT NULL CHECK (attempt_number > 0),
       owner_token TEXT NOT NULL,
-      state TEXT NOT NULL CHECK (state IN ('started', 'succeeded', 'retry_scheduled', 'terminal_failure', 'interrupted')),
+      state TEXT NOT NULL CHECK (state IN ('started', 'succeeded', 'retry_scheduled', 'terminal_failure', 'interrupted', 'policy_deferred', 'policy_suppressed')),
       retry_policy_version TEXT NOT NULL,
       adapter_kind TEXT NOT NULL,
       adapter_version TEXT NOT NULL,
@@ -519,14 +530,286 @@ export function forecastInitializationStatements() {
           AND redacted_error_category IS NOT NULL AND next_attempt_at IS NULL)
         OR (state = 'interrupted' AND finished_at IS NOT NULL AND failure_classification = 'interrupted'
           AND redacted_error_category IS NOT NULL AND next_attempt_at IS NULL)
+        OR (state = 'policy_deferred' AND finished_at IS NOT NULL AND failure_classification IS NULL
+          AND redacted_error_category IS NULL AND next_attempt_at IS NOT NULL)
+        OR (state = 'policy_suppressed' AND finished_at IS NOT NULL AND failure_classification IS NULL
+          AND redacted_error_category IS NULL AND next_attempt_at IS NULL)
       ),
       FOREIGN KEY (outbox_id, profile_id) REFERENCES forecast_notification_outbox(id, profile_id) ON DELETE CASCADE
     )`,
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_notification_attempts_id_profile ON forecast_notification_delivery_attempts(id, profile_id)',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_notification_attempts_outbox_number ON forecast_notification_delivery_attempts(outbox_id, attempt_number)',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_notification_attempts_owner_token ON forecast_notification_delivery_attempts(owner_token)',
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_notification_attempts_started ON forecast_notification_delivery_attempts(outbox_id) WHERE state = 'started'",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_notification_attempts_succeeded ON forecast_notification_delivery_attempts(outbox_id) WHERE state = 'succeeded'",
     'CREATE INDEX IF NOT EXISTS idx_forecast_notification_attempts_profile_created ON forecast_notification_delivery_attempts(profile_id, created_at, id)',
+    `CREATE TABLE IF NOT EXISTS forecast_email_recipients (
+      id TEXT PRIMARY KEY NOT NULL,
+      profile_id INTEGER NOT NULL,
+      recipient_revision INTEGER NOT NULL CHECK (recipient_revision > 0),
+      canonical_email TEXT NOT NULL,
+      masked_email TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('pending', 'verified', 'revoked', 'replaced')),
+      verification_requested_at TEXT,
+      verified_at TEXT,
+      revoked_at TEXT,
+      suppression_state TEXT NOT NULL DEFAULT 'none' CHECK (suppression_state IN ('none', 'suppressed')),
+      suppression_reason TEXT,
+      suppressed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK (length(canonical_email) BETWEEN 3 AND 254 AND canonical_email = trim(canonical_email)
+        AND instr(canonical_email, '@') > 1 AND instr(canonical_email, char(10)) = 0
+        AND instr(canonical_email, char(13)) = 0 AND length(masked_email) BETWEEN 3 AND 254),
+      CHECK ((state = 'pending' AND verified_at IS NULL AND revoked_at IS NULL)
+        OR (state = 'verified' AND verified_at IS NOT NULL AND revoked_at IS NULL)
+        OR (state IN ('revoked', 'replaced') AND revoked_at IS NOT NULL)),
+      CHECK ((suppression_state = 'none' AND suppression_reason IS NULL AND suppressed_at IS NULL)
+        OR (suppression_state = 'suppressed' AND suppression_reason IS NOT NULL
+          AND length(suppression_reason) BETWEEN 1 AND 100 AND suppressed_at IS NOT NULL)),
+      FOREIGN KEY (profile_id) REFERENCES investment_profiles(id) ON DELETE CASCADE
+    )`,
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_recipients_id_profile ON forecast_email_recipients(id, profile_id)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_recipients_profile_revision ON forecast_email_recipients(profile_id, recipient_revision)',
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_recipients_current ON forecast_email_recipients(profile_id) WHERE state IN ('pending', 'verified')",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_recipients_current_address ON forecast_email_recipients(profile_id, canonical_email) WHERE state IN ('pending', 'verified')",
+    'CREATE INDEX IF NOT EXISTS idx_forecast_email_recipients_profile_created ON forecast_email_recipients(profile_id, created_at, id)',
+    `CREATE TABLE IF NOT EXISTS forecast_email_consent_revisions (
+      profile_id INTEGER NOT NULL,
+      revision INTEGER NOT NULL,
+      recipient_id TEXT NOT NULL,
+      master_consent INTEGER NOT NULL DEFAULT false,
+      target_hit_enabled INTEGER NOT NULL DEFAULT false,
+      invalidated_enabled INTEGER NOT NULL DEFAULT false,
+      expired_enabled INTEGER NOT NULL DEFAULT false,
+      needs_review_enabled INTEGER NOT NULL DEFAULT false,
+      consent_source TEXT NOT NULL,
+      consented_at TEXT,
+      revoked_at TEXT,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (profile_id, revision),
+      CHECK (revision > 0),
+      CHECK (master_consent IN (0, 1) AND target_hit_enabled IN (0, 1)
+        AND invalidated_enabled IN (0, 1) AND expired_enabled IN (0, 1)
+        AND needs_review_enabled IN (0, 1)),
+      CHECK (consent_source IN ('operator', 'unsubscribe', 'provider_complaint', 'recipient_replacement', 'internal')),
+      CHECK ((master_consent = 1 AND consented_at IS NOT NULL AND revoked_at IS NULL)
+        OR (master_consent = 0 AND revoked_at IS NOT NULL)),
+      FOREIGN KEY (profile_id) REFERENCES investment_profiles(id) ON DELETE CASCADE,
+      FOREIGN KEY (recipient_id, profile_id) REFERENCES forecast_email_recipients(id, profile_id)
+    )`,
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_consent_revisions_profile_revision_recipient ON forecast_email_consent_revisions(profile_id, revision, recipient_id)',
+    'CREATE INDEX IF NOT EXISTS idx_forecast_email_consent_revisions_recipient_created ON forecast_email_consent_revisions(profile_id, recipient_id, created_at, revision)',
+    `CREATE TABLE IF NOT EXISTS forecast_email_consents (
+      profile_id INTEGER PRIMARY KEY NOT NULL,
+      current_revision INTEGER NOT NULL CHECK (current_revision > 0),
+      recipient_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (profile_id) REFERENCES investment_profiles(id) ON DELETE CASCADE,
+      FOREIGN KEY (profile_id, current_revision, recipient_id)
+        REFERENCES forecast_email_consent_revisions(profile_id, revision, recipient_id),
+      FOREIGN KEY (recipient_id, profile_id) REFERENCES forecast_email_recipients(id, profile_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS forecast_email_capabilities (
+      id TEXT PRIMARY KEY NOT NULL,
+      profile_id INTEGER NOT NULL,
+      recipient_id TEXT NOT NULL,
+      purpose TEXT NOT NULL CHECK (purpose IN ('verification', 'unsubscribe')),
+      token_hash TEXT NOT NULL CHECK (length(token_hash) = 64),
+      token_version TEXT NOT NULL CHECK (length(token_version) BETWEEN 1 AND 50),
+      state TEXT NOT NULL CHECK (state IN ('active', 'consumed', 'revoked', 'expired')),
+      expires_at TEXT,
+      consent_revision INTEGER,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      last_attempt_at TEXT,
+      consumed_at TEXT,
+      revoked_at TEXT,
+      created_at TEXT NOT NULL,
+      CHECK ((purpose = 'verification' AND expires_at IS NOT NULL AND consent_revision IS NULL)
+        OR (purpose = 'unsubscribe' AND consent_revision IS NOT NULL)),
+      CHECK ((state IN ('active', 'expired') AND consumed_at IS NULL AND revoked_at IS NULL)
+        OR (state = 'consumed' AND consumed_at IS NOT NULL AND revoked_at IS NULL)
+        OR (state = 'revoked' AND consumed_at IS NULL AND revoked_at IS NOT NULL)),
+      CHECK (attempt_count >= 0 AND ((attempt_count = 0 AND last_attempt_at IS NULL)
+        OR (attempt_count > 0 AND last_attempt_at IS NOT NULL))),
+      FOREIGN KEY (profile_id) REFERENCES investment_profiles(id) ON DELETE CASCADE,
+      FOREIGN KEY (recipient_id, profile_id) REFERENCES forecast_email_recipients(id, profile_id),
+      FOREIGN KEY (profile_id, consent_revision, recipient_id)
+        REFERENCES forecast_email_consent_revisions(profile_id, revision, recipient_id)
+    )`,
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_capabilities_id_profile ON forecast_email_capabilities(id, profile_id)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_capabilities_token_hash ON forecast_email_capabilities(token_hash)',
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_capabilities_active_purpose ON forecast_email_capabilities(profile_id, recipient_id, purpose) WHERE state = 'active'",
+    'CREATE INDEX IF NOT EXISTS idx_forecast_email_capabilities_expiry ON forecast_email_capabilities(state, expires_at)',
+    `CREATE TABLE IF NOT EXISTS forecast_email_pre_send_decisions (
+      id TEXT PRIMARY KEY NOT NULL,
+      outbox_id TEXT NOT NULL,
+      attempt_id TEXT NOT NULL,
+      profile_id INTEGER NOT NULL,
+      recipient_id TEXT,
+      notification_preference_revision INTEGER,
+      email_consent_revision INTEGER,
+      decision TEXT NOT NULL CHECK (decision IN ('eligible', 'deferred_quiet_hours', 'suppressed')),
+      reason_code TEXT NOT NULL CHECK (length(reason_code) BETWEEN 1 AND 100),
+      checked_at TEXT NOT NULL,
+      next_available_at TEXT,
+      created_at TEXT NOT NULL,
+      CHECK ((decision = 'eligible' AND recipient_id IS NOT NULL
+          AND notification_preference_revision IS NOT NULL AND email_consent_revision IS NOT NULL
+          AND next_available_at IS NULL)
+        OR (decision = 'deferred_quiet_hours' AND recipient_id IS NOT NULL
+          AND notification_preference_revision IS NOT NULL AND email_consent_revision IS NOT NULL
+          AND next_available_at IS NOT NULL)
+        OR (decision = 'suppressed' AND next_available_at IS NULL)),
+      FOREIGN KEY (outbox_id, profile_id) REFERENCES forecast_notification_outbox(id, profile_id) ON DELETE CASCADE,
+      FOREIGN KEY (attempt_id, profile_id) REFERENCES forecast_notification_delivery_attempts(id, profile_id) ON DELETE CASCADE,
+      FOREIGN KEY (recipient_id, profile_id) REFERENCES forecast_email_recipients(id, profile_id),
+      FOREIGN KEY (profile_id, notification_preference_revision)
+        REFERENCES forecast_notification_preference_revisions(profile_id, revision),
+      FOREIGN KEY (profile_id, email_consent_revision, recipient_id)
+        REFERENCES forecast_email_consent_revisions(profile_id, revision, recipient_id)
+    )`,
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_pre_send_decisions_id_profile ON forecast_email_pre_send_decisions(id, profile_id)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_pre_send_decisions_attempt ON forecast_email_pre_send_decisions(attempt_id)',
+    'CREATE INDEX IF NOT EXISTS idx_forecast_email_pre_send_decisions_profile_checked ON forecast_email_pre_send_decisions(profile_id, checked_at, id)',
+    `CREATE TABLE IF NOT EXISTS forecast_email_deliveries (
+      id TEXT PRIMARY KEY NOT NULL,
+      profile_id INTEGER NOT NULL,
+      recipient_id TEXT NOT NULL,
+      source_kind TEXT NOT NULL,
+      outbox_id TEXT,
+      pre_send_decision_id TEXT,
+      verification_capability_id TEXT,
+      template_kind TEXT NOT NULL CHECK (length(template_kind) BETWEEN 1 AND 50),
+      template_version TEXT NOT NULL CHECK (length(template_version) BETWEEN 1 AND 50),
+      locale TEXT NOT NULL CHECK (length(locale) BETWEEN 2 AND 35),
+      content_hash TEXT NOT NULL CHECK (length(content_hash) = 64),
+      provider TEXT NOT NULL DEFAULT 'resend' CHECK (provider = 'resend'),
+      idempotency_key TEXT NOT NULL CHECK (length(idempotency_key) BETWEEN 1 AND 256),
+      canonical_request_hash TEXT NOT NULL CHECK (length(canonical_request_hash) = 64),
+      state TEXT NOT NULL CHECK (state IN ('prepared', 'request_started', 'provider_accepted', 'ambiguous', 'terminal_failure', 'dead_letter')),
+      request_started_at TEXT,
+      last_request_at TEXT,
+      safe_retry_until TEXT,
+      provider_accepted_at TEXT,
+      provider_email_id TEXT,
+      dead_lettered_at TEXT,
+      reconciliation_state TEXT NOT NULL DEFAULT 'none' CHECK (reconciliation_state IN ('none', 'delayed', 'delivered', 'failed', 'bounced', 'complained', 'suppressed')),
+      reconciliation_event_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK ((source_kind = 'forecast_notification' AND outbox_id IS NOT NULL
+          AND pre_send_decision_id IS NOT NULL AND verification_capability_id IS NULL)
+        OR (source_kind = 'recipient_verification' AND outbox_id IS NULL
+          AND pre_send_decision_id IS NULL AND verification_capability_id IS NOT NULL)),
+      CHECK ((request_started_at IS NULL AND last_request_at IS NULL AND safe_retry_until IS NULL)
+        OR (request_started_at IS NOT NULL AND last_request_at IS NOT NULL
+          AND last_request_at >= request_started_at AND safe_retry_until IS NOT NULL
+          AND safe_retry_until > request_started_at)),
+      CHECK ((provider_accepted_at IS NULL AND provider_email_id IS NULL)
+        OR (provider_accepted_at IS NOT NULL AND provider_email_id IS NOT NULL
+          AND length(provider_email_id) BETWEEN 1 AND 200)),
+      CHECK ((state = 'prepared' AND request_started_at IS NULL
+          AND provider_accepted_at IS NULL AND dead_lettered_at IS NULL)
+        OR (state = 'request_started' AND request_started_at IS NOT NULL
+          AND provider_accepted_at IS NULL AND dead_lettered_at IS NULL)
+        OR (state = 'provider_accepted' AND request_started_at IS NOT NULL
+          AND provider_accepted_at IS NOT NULL AND dead_lettered_at IS NULL)
+        OR (state IN ('ambiguous', 'terminal_failure') AND request_started_at IS NOT NULL
+          AND dead_lettered_at IS NULL)
+        OR (state = 'dead_letter' AND dead_lettered_at IS NOT NULL)),
+      CHECK ((reconciliation_state = 'none' AND reconciliation_event_at IS NULL)
+        OR (reconciliation_state <> 'none' AND reconciliation_event_at IS NOT NULL)),
+      FOREIGN KEY (profile_id) REFERENCES investment_profiles(id) ON DELETE CASCADE,
+      FOREIGN KEY (recipient_id, profile_id) REFERENCES forecast_email_recipients(id, profile_id),
+      FOREIGN KEY (outbox_id, profile_id) REFERENCES forecast_notification_outbox(id, profile_id),
+      FOREIGN KEY (pre_send_decision_id, profile_id) REFERENCES forecast_email_pre_send_decisions(id, profile_id),
+      FOREIGN KEY (verification_capability_id, profile_id) REFERENCES forecast_email_capabilities(id, profile_id)
+    )`,
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_deliveries_id_profile ON forecast_email_deliveries(id, profile_id)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_deliveries_outbox ON forecast_email_deliveries(outbox_id)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_deliveries_pre_send_decision ON forecast_email_deliveries(pre_send_decision_id)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_deliveries_verification_capability ON forecast_email_deliveries(verification_capability_id)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_deliveries_idempotency_key ON forecast_email_deliveries(idempotency_key)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_deliveries_provider_email_id ON forecast_email_deliveries(provider_email_id)',
+    'CREATE INDEX IF NOT EXISTS idx_forecast_email_deliveries_profile_state_created ON forecast_email_deliveries(profile_id, state, created_at, id)',
+    'CREATE INDEX IF NOT EXISTS idx_forecast_email_deliveries_reconciliation ON forecast_email_deliveries(reconciliation_state, reconciliation_event_at)',
+    `CREATE TABLE IF NOT EXISTS forecast_email_provider_attempts (
+      id TEXT PRIMARY KEY NOT NULL,
+      delivery_id TEXT NOT NULL,
+      profile_id INTEGER NOT NULL,
+      attempt_number INTEGER NOT NULL CHECK (attempt_number > 0),
+      notification_attempt_id TEXT,
+      state TEXT NOT NULL CHECK (state IN ('started', 'accepted', 'retry_scheduled', 'terminal_failure', 'ambiguous', 'interrupted')),
+      failure_classification TEXT CHECK (failure_classification IS NULL OR failure_classification IN ('retryable', 'terminal', 'ambiguous', 'interrupted')),
+      redacted_error_category TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      next_attempt_at TEXT,
+      safe_retry_until TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      CHECK (safe_retry_until > started_at),
+      CHECK ((state = 'started' AND finished_at IS NULL AND failure_classification IS NULL
+          AND redacted_error_category IS NULL AND next_attempt_at IS NULL)
+        OR (state = 'accepted' AND finished_at IS NOT NULL AND failure_classification IS NULL
+          AND redacted_error_category IS NULL AND next_attempt_at IS NULL)
+        OR (state = 'retry_scheduled' AND finished_at IS NOT NULL AND failure_classification = 'retryable'
+          AND redacted_error_category IS NOT NULL AND next_attempt_at IS NOT NULL)
+        OR (state = 'terminal_failure' AND finished_at IS NOT NULL
+          AND failure_classification IN ('retryable', 'terminal')
+          AND redacted_error_category IS NOT NULL AND next_attempt_at IS NULL)
+        OR (state = 'ambiguous' AND finished_at IS NOT NULL AND failure_classification = 'ambiguous'
+          AND redacted_error_category IS NOT NULL AND next_attempt_at IS NULL)
+        OR (state = 'interrupted' AND finished_at IS NOT NULL AND failure_classification = 'interrupted'
+          AND redacted_error_category IS NOT NULL AND next_attempt_at IS NULL)),
+      FOREIGN KEY (delivery_id, profile_id) REFERENCES forecast_email_deliveries(id, profile_id) ON DELETE CASCADE,
+      FOREIGN KEY (notification_attempt_id, profile_id)
+        REFERENCES forecast_notification_delivery_attempts(id, profile_id)
+    )`,
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_provider_attempts_id_profile ON forecast_email_provider_attempts(id, profile_id)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_provider_attempts_delivery_number ON forecast_email_provider_attempts(delivery_id, attempt_number)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_provider_attempts_notification_attempt ON forecast_email_provider_attempts(notification_attempt_id)',
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_provider_attempts_started ON forecast_email_provider_attempts(delivery_id) WHERE state = 'started'",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_provider_attempts_accepted ON forecast_email_provider_attempts(delivery_id) WHERE state = 'accepted'",
+    'CREATE INDEX IF NOT EXISTS idx_forecast_email_provider_attempts_profile_created ON forecast_email_provider_attempts(profile_id, created_at, id)',
+    `CREATE TABLE IF NOT EXISTS forecast_email_provider_events (
+      id TEXT PRIMARY KEY NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'resend' CHECK (provider = 'resend'),
+      provider_event_id TEXT NOT NULL,
+      provider_email_id TEXT NOT NULL,
+      delivery_id TEXT,
+      profile_id INTEGER,
+      event_type TEXT NOT NULL,
+      supported INTEGER NOT NULL CHECK (supported IN (0, 1)),
+      payload_hash TEXT NOT NULL CHECK (length(payload_hash) = 64),
+      event_occurred_at TEXT NOT NULL,
+      received_at TEXT NOT NULL,
+      handling_state TEXT NOT NULL CHECK (handling_state IN ('applied', 'unsupported', 'unknown_delivery', 'ignored_precedence', 'pending')),
+      created_at TEXT NOT NULL,
+      CHECK ((delivery_id IS NULL AND profile_id IS NULL)
+        OR (delivery_id IS NOT NULL AND profile_id IS NOT NULL)),
+      FOREIGN KEY (delivery_id, profile_id) REFERENCES forecast_email_deliveries(id, profile_id)
+    )`,
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_provider_events_id_profile ON forecast_email_provider_events(id, profile_id)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_provider_events_provider_event ON forecast_email_provider_events(provider, provider_event_id)',
+    'CREATE INDEX IF NOT EXISTS idx_forecast_email_provider_events_provider_email ON forecast_email_provider_events(provider, provider_email_id, received_at)',
+    'CREATE INDEX IF NOT EXISTS idx_forecast_email_provider_events_handling ON forecast_email_provider_events(handling_state, received_at, id)',
+    `CREATE TABLE IF NOT EXISTS forecast_email_suppression_events (
+      id TEXT PRIMARY KEY NOT NULL,
+      profile_id INTEGER NOT NULL,
+      recipient_id TEXT NOT NULL,
+      provider_event_id TEXT,
+      action TEXT NOT NULL CHECK (action IN ('suppressed', 'cleared')),
+      reason TEXT NOT NULL CHECK (reason IN ('hard_bounce', 'complaint', 'provider_suppressed', 'operator')),
+      occurred_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (recipient_id, profile_id) REFERENCES forecast_email_recipients(id, profile_id),
+      FOREIGN KEY (provider_event_id, profile_id) REFERENCES forecast_email_provider_events(id, profile_id)
+    )`,
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_suppression_events_id_profile ON forecast_email_suppression_events(id, profile_id)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_email_suppression_events_provider_event ON forecast_email_suppression_events(provider_event_id)',
+    'CREATE INDEX IF NOT EXISTS idx_forecast_email_suppression_events_recipient_occurred ON forecast_email_suppression_events(profile_id, recipient_id, occurred_at, id)',
   ] as const;
 }
 

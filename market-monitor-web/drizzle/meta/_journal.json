@@ -50,6 +50,13 @@
       "when": 1787669355518,
       "tag": "0006_late_wasp",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1787675470124,
+      "tag": "0007_late_amphibian",
+      "breakpoints": true
     }
   ]
 }

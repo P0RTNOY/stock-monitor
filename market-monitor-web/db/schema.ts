@@ -670,6 +670,8 @@ export const forecastNotificationOutbox = sqliteTable('forecast_notification_out
   lastAttemptAt: text('last_attempt_at'),
   succeededAt: text('succeeded_at'),
   deadLetteredAt: text('dead_lettered_at'),
+  suppressedAt: text('suppressed_at'),
+  suppressionReason: text('suppression_reason'),
   lastFailureCategory: text('last_failure_category'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
@@ -692,7 +694,8 @@ export const forecastNotificationOutbox = sqliteTable('forecast_notification_out
   }).onDelete('cascade'),
   check('forecast_notification_outbox_state_check', sql`${table.state} IN ('pending', 'deferred', 'suppressed', 'claimed', 'retry_scheduled', 'succeeded', 'dead_letter')`),
   check('forecast_notification_outbox_attempt_count_check', sql`${table.attemptCount} >= 0 AND (
-    (${table.state} IN ('pending', 'deferred', 'suppressed') AND ${table.attemptCount} = 0)
+    (${table.state} = 'pending' AND ${table.attemptCount} = 0)
+    OR (${table.state} IN ('deferred', 'suppressed') AND ${table.attemptCount} >= 0)
     OR (${table.state} IN ('claimed', 'retry_scheduled', 'succeeded', 'dead_letter') AND ${table.attemptCount} > 0)
   )`),
   check('forecast_notification_outbox_available_check', sql`${table.state} IN ('suppressed', 'succeeded', 'dead_letter') OR ${table.availableAt} IS NOT NULL`),
@@ -710,6 +713,15 @@ export const forecastNotificationOutbox = sqliteTable('forecast_notification_out
     ${table.state} = 'dead_letter' AND ${table.deadLetteredAt} IS NOT NULL
   ) OR (
     ${table.state} <> 'dead_letter' AND ${table.deadLetteredAt} IS NULL
+  )`),
+  check('forecast_notification_outbox_suppression_check', sql`(
+    ${table.state} = 'suppressed'
+      AND ((${table.suppressedAt} IS NULL AND ${table.suppressionReason} IS NULL)
+        OR (${table.suppressedAt} IS NOT NULL AND ${table.suppressionReason} IS NOT NULL
+          AND length(${table.suppressionReason}) BETWEEN 1 AND 100))
+  ) OR (
+    ${table.state} <> 'suppressed' AND ${table.suppressedAt} IS NULL
+      AND ${table.suppressionReason} IS NULL
   )`),
 ]);
 
@@ -780,6 +792,7 @@ export const forecastNotificationDeliveryAttempts = sqliteTable('forecast_notifi
   nextAttemptAt: text('next_attempt_at'),
   createdAt: text('created_at').notNull(),
 }, (table) => [
+  uniqueIndex('idx_forecast_notification_attempts_id_profile').on(table.id, table.profileId),
   uniqueIndex('idx_forecast_notification_attempts_outbox_number').on(table.outboxId, table.attemptNumber),
   uniqueIndex('idx_forecast_notification_attempts_owner_token').on(table.ownerToken),
   uniqueIndex('idx_forecast_notification_attempts_started').on(table.outboxId)
@@ -793,7 +806,7 @@ export const forecastNotificationDeliveryAttempts = sqliteTable('forecast_notifi
     name: 'forecast_notification_attempts_outbox_profile_fk',
   }).onDelete('cascade'),
   check('forecast_notification_attempts_number_check', sql`${table.attemptNumber} > 0`),
-  check('forecast_notification_attempts_state_check', sql`${table.state} IN ('started', 'succeeded', 'retry_scheduled', 'terminal_failure', 'interrupted')`),
+  check('forecast_notification_attempts_state_check', sql`${table.state} IN ('started', 'succeeded', 'retry_scheduled', 'terminal_failure', 'interrupted', 'policy_deferred', 'policy_suppressed')`),
   check('forecast_notification_attempts_failure_classification_check', sql`${table.failureClassification} IS NULL OR ${table.failureClassification} IN ('retryable', 'terminal', 'interrupted')`),
   check('forecast_notification_attempts_completion_check', sql`(
     ${table.state} = 'started' AND ${table.finishedAt} IS NULL
@@ -815,5 +828,482 @@ export const forecastNotificationDeliveryAttempts = sqliteTable('forecast_notifi
     ${table.state} = 'interrupted' AND ${table.finishedAt} IS NOT NULL
       AND ${table.failureClassification} = 'interrupted' AND ${table.redactedErrorCategory} IS NOT NULL
       AND ${table.nextAttemptAt} IS NULL
+  ) OR (
+    ${table.state} = 'policy_deferred' AND ${table.finishedAt} IS NOT NULL
+      AND ${table.failureClassification} IS NULL AND ${table.redactedErrorCategory} IS NULL
+      AND ${table.nextAttemptAt} IS NOT NULL
+  ) OR (
+    ${table.state} = 'policy_suppressed' AND ${table.finishedAt} IS NOT NULL
+      AND ${table.failureClassification} IS NULL AND ${table.redactedErrorCategory} IS NULL
+      AND ${table.nextAttemptAt} IS NULL
+  )`),
+]);
+
+export const forecastEmailRecipients = sqliteTable('forecast_email_recipients', {
+  id: text('id').primaryKey(),
+  profileId: integer('profile_id').notNull().references(() => investmentProfiles.id, { onDelete: 'cascade' }),
+  recipientRevision: integer('recipient_revision').notNull(),
+  canonicalEmail: text('canonical_email').notNull(),
+  maskedEmail: text('masked_email').notNull(),
+  state: text('state').notNull(),
+  verificationRequestedAt: text('verification_requested_at'),
+  verifiedAt: text('verified_at'),
+  revokedAt: text('revoked_at'),
+  suppressionState: text('suppression_state').notNull().default('none'),
+  suppressionReason: text('suppression_reason'),
+  suppressedAt: text('suppressed_at'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_forecast_email_recipients_id_profile').on(table.id, table.profileId),
+  uniqueIndex('idx_forecast_email_recipients_profile_revision').on(table.profileId, table.recipientRevision),
+  uniqueIndex('idx_forecast_email_recipients_current').on(table.profileId)
+    .where(sql`${table.state} IN ('pending', 'verified')`),
+  uniqueIndex('idx_forecast_email_recipients_current_address').on(table.profileId, table.canonicalEmail)
+    .where(sql`${table.state} IN ('pending', 'verified')`),
+  index('idx_forecast_email_recipients_profile_created').on(table.profileId, table.createdAt, table.id),
+  check('forecast_email_recipients_revision_check', sql`${table.recipientRevision} > 0`),
+  check('forecast_email_recipients_email_check', sql`length(${table.canonicalEmail}) BETWEEN 3 AND 254
+    AND ${table.canonicalEmail} = trim(${table.canonicalEmail})
+    AND instr(${table.canonicalEmail}, '@') > 1
+    AND instr(${table.canonicalEmail}, char(10)) = 0 AND instr(${table.canonicalEmail}, char(13)) = 0
+    AND length(${table.maskedEmail}) BETWEEN 3 AND 254`),
+  check('forecast_email_recipients_state_check', sql`${table.state} IN ('pending', 'verified', 'revoked', 'replaced')`),
+  check('forecast_email_recipients_lifecycle_check', sql`(
+    ${table.state} = 'pending' AND ${table.verifiedAt} IS NULL AND ${table.revokedAt} IS NULL
+  ) OR (
+    ${table.state} = 'verified' AND ${table.verifiedAt} IS NOT NULL AND ${table.revokedAt} IS NULL
+  ) OR (
+    ${table.state} IN ('revoked', 'replaced') AND ${table.revokedAt} IS NOT NULL
+  )`),
+  check('forecast_email_recipients_suppression_state_check', sql`${table.suppressionState} IN ('none', 'suppressed')`),
+  check('forecast_email_recipients_suppression_check', sql`(
+    ${table.suppressionState} = 'none' AND ${table.suppressionReason} IS NULL AND ${table.suppressedAt} IS NULL
+  ) OR (
+    ${table.suppressionState} = 'suppressed' AND ${table.suppressionReason} IS NOT NULL
+      AND length(${table.suppressionReason}) BETWEEN 1 AND 100 AND ${table.suppressedAt} IS NOT NULL
+  )`),
+]);
+
+export const forecastEmailConsentRevisions = sqliteTable('forecast_email_consent_revisions', {
+  profileId: integer('profile_id').notNull().references(() => investmentProfiles.id, { onDelete: 'cascade' }),
+  revision: integer('revision').notNull(),
+  recipientId: text('recipient_id').notNull(),
+  masterConsent: integer('master_consent', { mode: 'boolean' }).notNull().default(false),
+  targetHitEnabled: integer('target_hit_enabled', { mode: 'boolean' }).notNull().default(false),
+  invalidatedEnabled: integer('invalidated_enabled', { mode: 'boolean' }).notNull().default(false),
+  expiredEnabled: integer('expired_enabled', { mode: 'boolean' }).notNull().default(false),
+  needsReviewEnabled: integer('needs_review_enabled', { mode: 'boolean' }).notNull().default(false),
+  consentSource: text('consent_source').notNull(),
+  consentedAt: text('consented_at'),
+  revokedAt: text('revoked_at'),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.profileId, table.revision], name: 'forecast_email_consent_revisions_pk' }),
+  uniqueIndex('idx_forecast_email_consent_revisions_profile_revision_recipient')
+    .on(table.profileId, table.revision, table.recipientId),
+  index('idx_forecast_email_consent_revisions_recipient_created')
+    .on(table.profileId, table.recipientId, table.createdAt, table.revision),
+  foreignKey({
+    columns: [table.recipientId, table.profileId],
+    foreignColumns: [forecastEmailRecipients.id, forecastEmailRecipients.profileId],
+    name: 'forecast_email_consent_revisions_recipient_profile_fk',
+  }),
+  check('forecast_email_consent_revisions_revision_check', sql`${table.revision} > 0`),
+  check('forecast_email_consent_revisions_booleans_check', sql`${table.masterConsent} IN (0, 1)
+    AND ${table.targetHitEnabled} IN (0, 1) AND ${table.invalidatedEnabled} IN (0, 1)
+    AND ${table.expiredEnabled} IN (0, 1) AND ${table.needsReviewEnabled} IN (0, 1)`),
+  check('forecast_email_consent_revisions_source_check', sql`${table.consentSource} IN (
+    'operator', 'unsubscribe', 'provider_complaint', 'recipient_replacement', 'internal'
+  )`),
+  check('forecast_email_consent_revisions_lifecycle_check', sql`(
+    ${table.masterConsent} = 1 AND ${table.consentedAt} IS NOT NULL AND ${table.revokedAt} IS NULL
+  ) OR (
+    ${table.masterConsent} = 0 AND ${table.revokedAt} IS NOT NULL
+  )`),
+]);
+
+export const forecastEmailConsents = sqliteTable('forecast_email_consents', {
+  profileId: integer('profile_id').primaryKey().references(() => investmentProfiles.id, { onDelete: 'cascade' }),
+  currentRevision: integer('current_revision').notNull(),
+  recipientId: text('recipient_id').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  foreignKey({
+    columns: [table.profileId, table.currentRevision, table.recipientId],
+    foreignColumns: [
+      forecastEmailConsentRevisions.profileId,
+      forecastEmailConsentRevisions.revision,
+      forecastEmailConsentRevisions.recipientId,
+    ],
+    name: 'forecast_email_consents_current_revision_fk',
+  }),
+  foreignKey({
+    columns: [table.recipientId, table.profileId],
+    foreignColumns: [forecastEmailRecipients.id, forecastEmailRecipients.profileId],
+    name: 'forecast_email_consents_recipient_profile_fk',
+  }),
+  check('forecast_email_consents_revision_check', sql`${table.currentRevision} > 0`),
+]);
+
+export const forecastEmailCapabilities = sqliteTable('forecast_email_capabilities', {
+  id: text('id').primaryKey(),
+  profileId: integer('profile_id').notNull().references(() => investmentProfiles.id, { onDelete: 'cascade' }),
+  recipientId: text('recipient_id').notNull(),
+  purpose: text('purpose').notNull(),
+  tokenHash: text('token_hash').notNull(),
+  tokenVersion: text('token_version').notNull(),
+  state: text('state').notNull(),
+  expiresAt: text('expires_at'),
+  consentRevision: integer('consent_revision'),
+  attemptCount: integer('attempt_count').notNull().default(0),
+  lastAttemptAt: text('last_attempt_at'),
+  consumedAt: text('consumed_at'),
+  revokedAt: text('revoked_at'),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_forecast_email_capabilities_id_profile').on(table.id, table.profileId),
+  uniqueIndex('idx_forecast_email_capabilities_token_hash').on(table.tokenHash),
+  uniqueIndex('idx_forecast_email_capabilities_active_purpose').on(table.profileId, table.recipientId, table.purpose)
+    .where(sql`${table.state} = 'active'`),
+  index('idx_forecast_email_capabilities_expiry').on(table.state, table.expiresAt),
+  foreignKey({
+    columns: [table.recipientId, table.profileId],
+    foreignColumns: [forecastEmailRecipients.id, forecastEmailRecipients.profileId],
+    name: 'forecast_email_capabilities_recipient_profile_fk',
+  }),
+  foreignKey({
+    columns: [table.profileId, table.consentRevision, table.recipientId],
+    foreignColumns: [
+      forecastEmailConsentRevisions.profileId,
+      forecastEmailConsentRevisions.revision,
+      forecastEmailConsentRevisions.recipientId,
+    ],
+    name: 'forecast_email_capabilities_consent_revision_fk',
+  }),
+  check('forecast_email_capabilities_purpose_check', sql`${table.purpose} IN ('verification', 'unsubscribe')`),
+  check('forecast_email_capabilities_token_check', sql`length(${table.tokenHash}) = 64
+    AND length(${table.tokenVersion}) BETWEEN 1 AND 50`),
+  check('forecast_email_capabilities_state_check', sql`${table.state} IN ('active', 'consumed', 'revoked', 'expired')`),
+  check('forecast_email_capabilities_binding_check', sql`(
+    ${table.purpose} = 'verification' AND ${table.expiresAt} IS NOT NULL AND ${table.consentRevision} IS NULL
+  ) OR (
+    ${table.purpose} = 'unsubscribe' AND ${table.consentRevision} IS NOT NULL
+  )`),
+  check('forecast_email_capabilities_state_timestamps_check', sql`(
+    ${table.state} IN ('active', 'expired') AND ${table.consumedAt} IS NULL AND ${table.revokedAt} IS NULL
+  ) OR (
+    ${table.state} = 'consumed' AND ${table.consumedAt} IS NOT NULL AND ${table.revokedAt} IS NULL
+  ) OR (
+    ${table.state} = 'revoked' AND ${table.consumedAt} IS NULL AND ${table.revokedAt} IS NOT NULL
+  )`),
+  check('forecast_email_capabilities_attempt_check', sql`${table.attemptCount} >= 0 AND (
+    (${table.attemptCount} = 0 AND ${table.lastAttemptAt} IS NULL)
+    OR (${table.attemptCount} > 0 AND ${table.lastAttemptAt} IS NOT NULL)
+  )`),
+]);
+
+export const forecastEmailPreSendDecisions = sqliteTable('forecast_email_pre_send_decisions', {
+  id: text('id').primaryKey(),
+  outboxId: text('outbox_id').notNull(),
+  attemptId: text('attempt_id').notNull(),
+  profileId: integer('profile_id').notNull(),
+  recipientId: text('recipient_id'),
+  notificationPreferenceRevision: integer('notification_preference_revision'),
+  emailConsentRevision: integer('email_consent_revision'),
+  decision: text('decision').notNull(),
+  reasonCode: text('reason_code').notNull(),
+  checkedAt: text('checked_at').notNull(),
+  nextAvailableAt: text('next_available_at'),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_forecast_email_pre_send_decisions_id_profile').on(table.id, table.profileId),
+  uniqueIndex('idx_forecast_email_pre_send_decisions_attempt').on(table.attemptId),
+  index('idx_forecast_email_pre_send_decisions_profile_checked').on(table.profileId, table.checkedAt, table.id),
+  foreignKey({
+    columns: [table.outboxId, table.profileId],
+    foreignColumns: [forecastNotificationOutbox.id, forecastNotificationOutbox.profileId],
+    name: 'forecast_email_pre_send_decisions_outbox_profile_fk',
+  }).onDelete('cascade'),
+  foreignKey({
+    columns: [table.attemptId, table.profileId],
+    foreignColumns: [forecastNotificationDeliveryAttempts.id, forecastNotificationDeliveryAttempts.profileId],
+    name: 'forecast_email_pre_send_decisions_attempt_profile_fk',
+  }).onDelete('cascade'),
+  foreignKey({
+    columns: [table.recipientId, table.profileId],
+    foreignColumns: [forecastEmailRecipients.id, forecastEmailRecipients.profileId],
+    name: 'forecast_email_pre_send_decisions_recipient_profile_fk',
+  }),
+  foreignKey({
+    columns: [table.profileId, table.notificationPreferenceRevision],
+    foreignColumns: [forecastNotificationPreferenceRevisions.profileId, forecastNotificationPreferenceRevisions.revision],
+    name: 'forecast_email_pre_send_decisions_notification_preference_fk',
+  }),
+  foreignKey({
+    columns: [table.profileId, table.emailConsentRevision, table.recipientId],
+    foreignColumns: [
+      forecastEmailConsentRevisions.profileId,
+      forecastEmailConsentRevisions.revision,
+      forecastEmailConsentRevisions.recipientId,
+    ],
+    name: 'forecast_email_pre_send_decisions_email_consent_fk',
+  }),
+  check('forecast_email_pre_send_decisions_decision_check', sql`${table.decision} IN ('eligible', 'deferred_quiet_hours', 'suppressed')`),
+  check('forecast_email_pre_send_decisions_reason_check', sql`length(${table.reasonCode}) BETWEEN 1 AND 100`),
+  check('forecast_email_pre_send_decisions_shape_check', sql`(
+    ${table.decision} = 'eligible' AND ${table.recipientId} IS NOT NULL
+      AND ${table.notificationPreferenceRevision} IS NOT NULL AND ${table.emailConsentRevision} IS NOT NULL
+      AND ${table.nextAvailableAt} IS NULL
+  ) OR (
+    ${table.decision} = 'deferred_quiet_hours' AND ${table.recipientId} IS NOT NULL
+      AND ${table.notificationPreferenceRevision} IS NOT NULL AND ${table.emailConsentRevision} IS NOT NULL
+      AND ${table.nextAvailableAt} IS NOT NULL
+  ) OR (
+    ${table.decision} = 'suppressed' AND ${table.nextAvailableAt} IS NULL
+  )`),
+]);
+
+export const forecastEmailDeliveries = sqliteTable('forecast_email_deliveries', {
+  id: text('id').primaryKey(),
+  profileId: integer('profile_id').notNull().references(() => investmentProfiles.id, { onDelete: 'cascade' }),
+  recipientId: text('recipient_id').notNull(),
+  sourceKind: text('source_kind').notNull(),
+  outboxId: text('outbox_id'),
+  preSendDecisionId: text('pre_send_decision_id'),
+  verificationCapabilityId: text('verification_capability_id'),
+  templateKind: text('template_kind').notNull(),
+  templateVersion: text('template_version').notNull(),
+  locale: text('locale').notNull(),
+  contentHash: text('content_hash').notNull(),
+  provider: text('provider').notNull().default('resend'),
+  idempotencyKey: text('idempotency_key').notNull(),
+  canonicalRequestHash: text('canonical_request_hash').notNull(),
+  state: text('state').notNull(),
+  requestStartedAt: text('request_started_at'),
+  lastRequestAt: text('last_request_at'),
+  safeRetryUntil: text('safe_retry_until'),
+  providerAcceptedAt: text('provider_accepted_at'),
+  providerEmailId: text('provider_email_id'),
+  deadLetteredAt: text('dead_lettered_at'),
+  reconciliationState: text('reconciliation_state').notNull().default('none'),
+  reconciliationEventAt: text('reconciliation_event_at'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_forecast_email_deliveries_id_profile').on(table.id, table.profileId),
+  uniqueIndex('idx_forecast_email_deliveries_outbox').on(table.outboxId),
+  uniqueIndex('idx_forecast_email_deliveries_pre_send_decision').on(table.preSendDecisionId),
+  uniqueIndex('idx_forecast_email_deliveries_verification_capability').on(table.verificationCapabilityId),
+  uniqueIndex('idx_forecast_email_deliveries_idempotency_key').on(table.idempotencyKey),
+  uniqueIndex('idx_forecast_email_deliveries_provider_email_id').on(table.providerEmailId),
+  index('idx_forecast_email_deliveries_profile_state_created').on(table.profileId, table.state, table.createdAt, table.id),
+  index('idx_forecast_email_deliveries_reconciliation').on(table.reconciliationState, table.reconciliationEventAt),
+  foreignKey({
+    columns: [table.recipientId, table.profileId],
+    foreignColumns: [forecastEmailRecipients.id, forecastEmailRecipients.profileId],
+    name: 'forecast_email_deliveries_recipient_profile_fk',
+  }),
+  foreignKey({
+    columns: [table.outboxId, table.profileId],
+    foreignColumns: [forecastNotificationOutbox.id, forecastNotificationOutbox.profileId],
+    name: 'forecast_email_deliveries_outbox_profile_fk',
+  }),
+  foreignKey({
+    columns: [table.preSendDecisionId, table.profileId],
+    foreignColumns: [forecastEmailPreSendDecisions.id, forecastEmailPreSendDecisions.profileId],
+    name: 'forecast_email_deliveries_pre_send_decision_profile_fk',
+  }),
+  foreignKey({
+    columns: [table.verificationCapabilityId, table.profileId],
+    foreignColumns: [forecastEmailCapabilities.id, forecastEmailCapabilities.profileId],
+    name: 'forecast_email_deliveries_verification_capability_profile_fk',
+  }),
+  check('forecast_email_deliveries_source_check', sql`(
+    ${table.sourceKind} = 'forecast_notification' AND ${table.outboxId} IS NOT NULL
+      AND ${table.preSendDecisionId} IS NOT NULL AND ${table.verificationCapabilityId} IS NULL
+  ) OR (
+    ${table.sourceKind} = 'recipient_verification' AND ${table.outboxId} IS NULL
+      AND ${table.preSendDecisionId} IS NULL AND ${table.verificationCapabilityId} IS NOT NULL
+  )`),
+  check('forecast_email_deliveries_template_check', sql`length(${table.templateKind}) BETWEEN 1 AND 50
+    AND length(${table.templateVersion}) BETWEEN 1 AND 50 AND length(${table.locale}) BETWEEN 2 AND 35`),
+  check('forecast_email_deliveries_hashes_check', sql`length(${table.contentHash}) = 64
+    AND length(${table.canonicalRequestHash}) = 64`),
+  check('forecast_email_deliveries_provider_check', sql`${table.provider} = 'resend'
+    AND length(${table.idempotencyKey}) BETWEEN 1 AND 256`),
+  check('forecast_email_deliveries_state_check', sql`${table.state} IN (
+    'prepared', 'request_started', 'provider_accepted', 'ambiguous', 'terminal_failure', 'dead_letter'
+  )`),
+  check('forecast_email_deliveries_request_check', sql`(
+    ${table.requestStartedAt} IS NULL AND ${table.lastRequestAt} IS NULL AND ${table.safeRetryUntil} IS NULL
+  ) OR (
+    ${table.requestStartedAt} IS NOT NULL AND ${table.lastRequestAt} IS NOT NULL
+      AND ${table.lastRequestAt} >= ${table.requestStartedAt} AND ${table.safeRetryUntil} IS NOT NULL
+      AND ${table.safeRetryUntil} > ${table.requestStartedAt}
+  )`),
+  check('forecast_email_deliveries_acceptance_check', sql`(
+    ${table.providerAcceptedAt} IS NULL AND ${table.providerEmailId} IS NULL
+  ) OR (
+    ${table.providerAcceptedAt} IS NOT NULL AND ${table.providerEmailId} IS NOT NULL
+      AND length(${table.providerEmailId}) BETWEEN 1 AND 200
+  )`),
+  check('forecast_email_deliveries_state_shape_check', sql`(
+    ${table.state} = 'prepared' AND ${table.requestStartedAt} IS NULL
+      AND ${table.providerAcceptedAt} IS NULL AND ${table.deadLetteredAt} IS NULL
+  ) OR (
+    ${table.state} = 'request_started' AND ${table.requestStartedAt} IS NOT NULL
+      AND ${table.providerAcceptedAt} IS NULL AND ${table.deadLetteredAt} IS NULL
+  ) OR (
+    ${table.state} = 'provider_accepted' AND ${table.requestStartedAt} IS NOT NULL
+      AND ${table.providerAcceptedAt} IS NOT NULL AND ${table.deadLetteredAt} IS NULL
+  ) OR (
+    ${table.state} IN ('ambiguous', 'terminal_failure') AND ${table.requestStartedAt} IS NOT NULL
+      AND ${table.deadLetteredAt} IS NULL
+  ) OR (
+    ${table.state} = 'dead_letter' AND ${table.deadLetteredAt} IS NOT NULL
+  )`),
+  check('forecast_email_deliveries_reconciliation_state_check', sql`${table.reconciliationState} IN (
+    'none', 'delayed', 'delivered', 'failed', 'bounced', 'complained', 'suppressed'
+  )`),
+  check('forecast_email_deliveries_reconciliation_check', sql`(
+    ${table.reconciliationState} = 'none' AND ${table.reconciliationEventAt} IS NULL
+  ) OR (
+    ${table.reconciliationState} <> 'none' AND ${table.reconciliationEventAt} IS NOT NULL
+  )`),
+]);
+
+export const forecastEmailProviderAttempts = sqliteTable('forecast_email_provider_attempts', {
+  id: text('id').primaryKey(),
+  deliveryId: text('delivery_id').notNull(),
+  profileId: integer('profile_id').notNull(),
+  attemptNumber: integer('attempt_number').notNull(),
+  notificationAttemptId: text('notification_attempt_id'),
+  state: text('state').notNull(),
+  failureClassification: text('failure_classification'),
+  redactedErrorCategory: text('redacted_error_category'),
+  startedAt: text('started_at').notNull(),
+  finishedAt: text('finished_at'),
+  nextAttemptAt: text('next_attempt_at'),
+  safeRetryUntil: text('safe_retry_until').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_forecast_email_provider_attempts_id_profile').on(table.id, table.profileId),
+  uniqueIndex('idx_forecast_email_provider_attempts_delivery_number').on(table.deliveryId, table.attemptNumber),
+  uniqueIndex('idx_forecast_email_provider_attempts_notification_attempt').on(table.notificationAttemptId),
+  uniqueIndex('idx_forecast_email_provider_attempts_started').on(table.deliveryId)
+    .where(sql`${table.state} = 'started'`),
+  uniqueIndex('idx_forecast_email_provider_attempts_accepted').on(table.deliveryId)
+    .where(sql`${table.state} = 'accepted'`),
+  index('idx_forecast_email_provider_attempts_profile_created').on(table.profileId, table.createdAt, table.id),
+  foreignKey({
+    columns: [table.deliveryId, table.profileId],
+    foreignColumns: [forecastEmailDeliveries.id, forecastEmailDeliveries.profileId],
+    name: 'forecast_email_provider_attempts_delivery_profile_fk',
+  }).onDelete('cascade'),
+  foreignKey({
+    columns: [table.notificationAttemptId, table.profileId],
+    foreignColumns: [forecastNotificationDeliveryAttempts.id, forecastNotificationDeliveryAttempts.profileId],
+    name: 'forecast_email_provider_attempts_notification_attempt_profile_fk',
+  }),
+  check('forecast_email_provider_attempts_number_check', sql`${table.attemptNumber} > 0`),
+  check('forecast_email_provider_attempts_state_check', sql`${table.state} IN (
+    'started', 'accepted', 'retry_scheduled', 'terminal_failure', 'ambiguous', 'interrupted'
+  )`),
+  check('forecast_email_provider_attempts_failure_check', sql`${table.failureClassification} IS NULL
+    OR ${table.failureClassification} IN ('retryable', 'terminal', 'ambiguous', 'interrupted')`),
+  check('forecast_email_provider_attempts_retry_window_check', sql`${table.safeRetryUntil} > ${table.startedAt}`),
+  check('forecast_email_provider_attempts_completion_check', sql`(
+    ${table.state} = 'started' AND ${table.finishedAt} IS NULL
+      AND ${table.failureClassification} IS NULL AND ${table.redactedErrorCategory} IS NULL
+      AND ${table.nextAttemptAt} IS NULL
+  ) OR (
+    ${table.state} = 'accepted' AND ${table.finishedAt} IS NOT NULL
+      AND ${table.failureClassification} IS NULL AND ${table.redactedErrorCategory} IS NULL
+      AND ${table.nextAttemptAt} IS NULL
+  ) OR (
+    ${table.state} = 'retry_scheduled' AND ${table.finishedAt} IS NOT NULL
+      AND ${table.failureClassification} = 'retryable' AND ${table.redactedErrorCategory} IS NOT NULL
+      AND ${table.nextAttemptAt} IS NOT NULL
+  ) OR (
+    ${table.state} = 'terminal_failure' AND ${table.finishedAt} IS NOT NULL
+      AND ${table.failureClassification} IN ('retryable', 'terminal')
+      AND ${table.redactedErrorCategory} IS NOT NULL AND ${table.nextAttemptAt} IS NULL
+  ) OR (
+    ${table.state} = 'ambiguous' AND ${table.finishedAt} IS NOT NULL
+      AND ${table.failureClassification} = 'ambiguous'
+      AND ${table.redactedErrorCategory} IS NOT NULL AND ${table.nextAttemptAt} IS NULL
+  ) OR (
+    ${table.state} = 'interrupted' AND ${table.finishedAt} IS NOT NULL
+      AND ${table.failureClassification} = 'interrupted'
+      AND ${table.redactedErrorCategory} IS NOT NULL AND ${table.nextAttemptAt} IS NULL
+  )`),
+]);
+
+export const forecastEmailProviderEvents = sqliteTable('forecast_email_provider_events', {
+  id: text('id').primaryKey(),
+  provider: text('provider').notNull().default('resend'),
+  providerEventId: text('provider_event_id').notNull(),
+  providerEmailId: text('provider_email_id').notNull(),
+  deliveryId: text('delivery_id'),
+  profileId: integer('profile_id'),
+  eventType: text('event_type').notNull(),
+  supported: integer('supported', { mode: 'boolean' }).notNull(),
+  payloadHash: text('payload_hash').notNull(),
+  eventOccurredAt: text('event_occurred_at').notNull(),
+  receivedAt: text('received_at').notNull(),
+  handlingState: text('handling_state').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_forecast_email_provider_events_id_profile').on(table.id, table.profileId),
+  uniqueIndex('idx_forecast_email_provider_events_provider_event').on(table.provider, table.providerEventId),
+  index('idx_forecast_email_provider_events_provider_email').on(table.provider, table.providerEmailId, table.receivedAt),
+  index('idx_forecast_email_provider_events_handling').on(table.handlingState, table.receivedAt, table.id),
+  foreignKey({
+    columns: [table.deliveryId, table.profileId],
+    foreignColumns: [forecastEmailDeliveries.id, forecastEmailDeliveries.profileId],
+    name: 'forecast_email_provider_events_delivery_profile_fk',
+  }),
+  check('forecast_email_provider_events_provider_check', sql`${table.provider} = 'resend'`),
+  check('forecast_email_provider_events_supported_check', sql`${table.supported} IN (0, 1)`),
+  check('forecast_email_provider_events_hash_check', sql`length(${table.payloadHash}) = 64`),
+  check('forecast_email_provider_events_resolution_check', sql`(
+    ${table.deliveryId} IS NULL AND ${table.profileId} IS NULL
+  ) OR (
+    ${table.deliveryId} IS NOT NULL AND ${table.profileId} IS NOT NULL
+  )`),
+  check('forecast_email_provider_events_handling_check', sql`${table.handlingState} IN (
+    'applied', 'unsupported', 'unknown_delivery', 'ignored_precedence', 'pending'
+  )`),
+]);
+
+export const forecastEmailSuppressionEvents = sqliteTable('forecast_email_suppression_events', {
+  id: text('id').primaryKey(),
+  profileId: integer('profile_id').notNull(),
+  recipientId: text('recipient_id').notNull(),
+  providerEventId: text('provider_event_id'),
+  action: text('action').notNull(),
+  reason: text('reason').notNull(),
+  occurredAt: text('occurred_at').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_forecast_email_suppression_events_id_profile').on(table.id, table.profileId),
+  uniqueIndex('idx_forecast_email_suppression_events_provider_event').on(table.providerEventId),
+  index('idx_forecast_email_suppression_events_recipient_occurred')
+    .on(table.profileId, table.recipientId, table.occurredAt, table.id),
+  foreignKey({
+    columns: [table.recipientId, table.profileId],
+    foreignColumns: [forecastEmailRecipients.id, forecastEmailRecipients.profileId],
+    name: 'forecast_email_suppression_events_recipient_profile_fk',
+  }),
+  foreignKey({
+    columns: [table.providerEventId, table.profileId],
+    foreignColumns: [forecastEmailProviderEvents.id, forecastEmailProviderEvents.profileId],
+    name: 'forecast_email_suppression_events_provider_event_profile_fk',
+  }),
+  check('forecast_email_suppression_events_action_check', sql`${table.action} IN ('suppressed', 'cleared')`),
+  check('forecast_email_suppression_events_reason_check', sql`${table.reason} IN (
+    'hard_bounce', 'complaint', 'provider_suppressed', 'operator'
   )`),
 ]);

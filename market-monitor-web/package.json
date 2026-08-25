@@ -17,14 +17,20 @@
     "forecast:schedule:status": "node --experimental-strip-types scripts/run-forecast-scheduler-status.ts",
     "forecast:notifications:project": "node --experimental-strip-types scripts/run-forecast-notification-projector.ts",
     "forecast:notifications:backfill": "node --experimental-strip-types scripts/run-forecast-notification-backfill.ts",
-    "forecast:notifications:status": "node --experimental-strip-types scripts/run-forecast-notification-status.ts"
+    "forecast:notifications:status": "node --experimental-strip-types scripts/run-forecast-notification-status.ts",
+    "forecast:email:recipient": "node --experimental-strip-types scripts/run-forecast-email-recipient.ts",
+    "forecast:email:consent": "node --experimental-strip-types scripts/run-forecast-email-consent.ts",
+    "forecast:email:verification:send": "node --experimental-strip-types scripts/run-forecast-email-verification-send.ts",
+    "forecast:email:dispatch": "node --experimental-strip-types scripts/run-forecast-email-dispatch.ts",
+    "forecast:email:status": "node --experimental-strip-types scripts/run-forecast-email-status.ts"
   },
   "dependencies": {
     "@js-temporal/polyfill": "0.5.1",
     "drizzle-orm": "0.45.2",
     "next": "16.2.6",
     "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react-dom": "19.2.6",
+    "standardwebhooks": "1.0.0"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.37.1",

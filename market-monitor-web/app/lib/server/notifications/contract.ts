@@ -18,7 +18,7 @@ export const NOTIFICATION_PROJECTION_MODES = ['dry_run', 'commit'] as const;
 export type NotificationProjectionMode = typeof NOTIFICATION_PROJECTION_MODES[number];
 
 export type NotificationProjectionCursorPosition = {
-  createdAt: string;
+  createdAt: string | null;
   evaluationRunId: number;
 };
 
@@ -185,12 +185,15 @@ export function parseNotificationCursorPayload(value: unknown): NotificationProj
   if (row.after !== null) {
     const position = record(row.after);
     if (!position || !exactKeys(position, ['createdAt', 'evaluationRunId'])
-      || !isCanonicalUtcInstant(position.createdAt)
+      || (position.createdAt !== null && !isCanonicalUtcInstant(position.createdAt))
       || !isPositiveSafeInteger(position.evaluationRunId)
-      || position.createdAt > row.cutoff) {
+      || (position.createdAt !== null && position.createdAt > row.cutoff)) {
       throw new NotificationContractError('Invalid notification cursor position.', 'invalid_cursor');
     }
-    after = { createdAt: position.createdAt, evaluationRunId: position.evaluationRunId };
+    after = {
+      createdAt: position.createdAt as string | null,
+      evaluationRunId: position.evaluationRunId,
+    };
   }
   return {
     v: NOTIFICATION_CURSOR_VERSION,

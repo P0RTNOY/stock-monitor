@@ -28,6 +28,7 @@ import type {
   NotificationProjectionSource,
   NotificationRepository,
 } from './repository.ts';
+import { isCanonicalUtcInstant } from '../coordinator/contract.ts';
 
 const PROJECTION_LEASE_MS = 5 * 60 * 1_000;
 
@@ -89,11 +90,14 @@ export class NotificationProjectionSystemError extends Error {
 }
 
 function canonicalInstant(value: string, label: string) {
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value)
-    || Number.isNaN(Date.parse(value))) {
+  if (!isCanonicalUtcInstant(value)) {
     throw new NotificationProjectionSystemError(`Notification runtime returned an invalid ${label}.`);
   }
   return value;
+}
+
+function canonicalInstantOrNull(value: string) {
+  return isCanonicalUtcInstant(value) ? value : null;
 }
 
 function leaseExpiry(acquiredAt: string) {
@@ -169,7 +173,7 @@ export class NotificationProjectorService {
   private async cursor(
     profileId: number,
     cutoff: string,
-    after: { evaluationRunId: number; createdAt: string } | null,
+    after: { evaluationRunId: number; createdAt: string | null } | null,
   ) {
     return encodeNotificationCursor(createNotificationCursorPayload({ profileId, cutoff, after }));
   }
@@ -193,52 +197,10 @@ export class NotificationProjectorService {
       };
     }
 
+    let payload;
     try {
-      const payload = materializeNotificationPayload(sourceForPayload(source));
-      const preferences = await this.repository.getCurrentPreference(profileId);
-      const policy = evaluateNotificationPolicy({
-        policyVersion: NOTIFICATION_POLICY_VERSION,
-        decisionAt,
-        trustedProfileId: profileId,
-        category: payload.category,
-        sourceValid: true,
-        historicalCutoverSuppressed,
-        preferences,
-      });
-      if (policy.decision === 'invalid_source_needs_review') {
-        throw new NotificationProjectionSystemError('Validated notification source produced an invalid policy decision.');
-      }
-      const persistedPolicy = policy as Omit<NotificationPolicyResult, 'decision'> & {
-        decision: Exclude<NotificationPolicyDecision, 'invalid_source_needs_review'>;
-      };
-      const payloadJson = canonicalNotificationPayloadJson(payload);
-      const [dedupKey, intentId, payloadFingerprint] = await Promise.all([
-        notificationSourceDedupKey(payload),
-        notificationIntentId(payload),
-        notificationPayloadFingerprint(payload),
-      ]);
-      return {
-        report: {
-          evaluationRunId: source.evaluationRunId,
-          forecastId: source.forecastId,
-          category: payload.category,
-          classification: 'intent_materialized' as const,
-          reasonCode: policy.reason,
-          policyDecision: policy.decision,
-          intentWouldBeCreated: true,
-          intentCreated: false,
-        },
-        persist: {
-          payload,
-          payloadJson,
-          payloadFingerprint,
-          dedupKey,
-          intentId,
-          policy: persistedPolicy,
-        },
-      };
-    } catch (error) {
-      if (error instanceof NotificationProjectionSystemError) throw error;
+      payload = materializeNotificationPayload(sourceForPayload(source));
+    } catch {
       return {
         report: excludedReport(
           source,
@@ -248,6 +210,50 @@ export class NotificationProjectorService {
         persist: null,
       };
     }
+    // Persistence, policy-runtime, and cryptographic failures are operational.
+    // They must stop this source without advancing it as malformed evidence.
+    const preferences = await this.repository.getCurrentPreference(profileId);
+    const policy = evaluateNotificationPolicy({
+      policyVersion: NOTIFICATION_POLICY_VERSION,
+      decisionAt,
+      trustedProfileId: profileId,
+      category: payload.category,
+      sourceValid: true,
+      historicalCutoverSuppressed,
+      preferences,
+    });
+    if (policy.decision === 'invalid_source_needs_review') {
+      throw new NotificationProjectionSystemError('Validated notification source produced an invalid policy decision.');
+    }
+    const persistedPolicy = policy as Omit<NotificationPolicyResult, 'decision'> & {
+      decision: Exclude<NotificationPolicyDecision, 'invalid_source_needs_review'>;
+    };
+    const payloadJson = canonicalNotificationPayloadJson(payload);
+    const [dedupKey, intentId, payloadFingerprint] = await Promise.all([
+      notificationSourceDedupKey(payload),
+      notificationIntentId(payload),
+      notificationPayloadFingerprint(payload),
+    ]);
+    return {
+      report: {
+        evaluationRunId: source.evaluationRunId,
+        forecastId: source.forecastId,
+        category: payload.category,
+        classification: 'intent_materialized' as const,
+        reasonCode: policy.reason,
+        policyDecision: policy.decision,
+        intentWouldBeCreated: true,
+        intentCreated: false,
+      },
+      persist: {
+        payload,
+        payloadJson,
+        payloadFingerprint,
+        dedupKey,
+        intentId,
+        policy: persistedPolicy,
+      },
+    };
   }
 
   async project(value: unknown, trustedProfileId: number): Promise<NotificationProjectionReport> {
@@ -432,7 +438,10 @@ export class NotificationProjectorService {
         }
         items.push(classified.report);
         lastEvaluationRunId = source.evaluationRunId;
-        lastPosition = { evaluationRunId: source.evaluationRunId, createdAt: source.createdAt };
+        lastPosition = {
+          evaluationRunId: source.evaluationRunId,
+          createdAt: canonicalInstantOrNull(source.createdAt),
+        };
       }
       const nextCursor = lastPosition && items.length
         ? await this.cursor(input.profileId, input.cutoff, lastPosition)
@@ -512,7 +521,11 @@ export class NotificationProjectorService {
     }
     const totals = counts(items);
     const endingEvaluationRunId = bounded.at(-1)?.evaluationRunId ?? input.fromEvaluationRunId - 1;
-    const hasMoreWithinBounds = page.hasMore && endingEvaluationRunId < input.throughEvaluationRunId;
+    const crossedUpperBound = page.sources.some(
+      (source) => source.evaluationRunId > input.throughEvaluationRunId,
+    );
+    const hasMoreWithinBounds = !crossedUpperBound && page.hasMore
+      && endingEvaluationRunId < input.throughEvaluationRunId;
     return {
       projectorVersion: NOTIFICATION_PROJECTOR_VERSION,
       profileId: parsed.profileId,

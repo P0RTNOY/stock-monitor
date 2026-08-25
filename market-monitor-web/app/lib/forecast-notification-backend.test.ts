@@ -7,6 +7,7 @@ import {
   NOTIFICATION_DEDUP_VERSION,
   NOTIFICATION_PAYLOAD_SCHEMA_VERSION,
   NOTIFICATION_PROJECTOR_VERSION,
+  decodeNotificationCursor,
 } from './server/notifications/contract.ts';
 import {
   NOTIFICATION_PREFERENCE_SCHEMA_VERSION,
@@ -319,6 +320,27 @@ test('projector processes stable bounded pages, isolates malformed sources, and 
   db.close();
 });
 
+test('a malformed source timestamp is quarantined without breaking keyset continuation', async () => {
+  const db = database();
+  const { projector } = services(db);
+  await establishBaseline(projector);
+  const malformed = insertSource(db, { createdAt: 'not-a-timestamp' });
+  const valid = insertSource(db, { kind: 'needs_review', createdAt: '2026-08-25T06:32:00.000Z' });
+
+  const first = await projector.project(projection('commit', { limit: 1 }), 1);
+  assert.equal(first.items[0].evaluationRunId, malformed.evaluationRunId);
+  assert.equal(first.items[0].classification, 'invalid_source_needs_review');
+  assert.ok(first.nextCursor);
+  const cursor = await decodeNotificationCursor(first.nextCursor, { profileId: 1, cutoff: CUTOFF });
+  assert.deepEqual(cursor.after, { createdAt: null, evaluationRunId: malformed.evaluationRunId });
+
+  const second = await projector.project(projection('commit', { limit: 1 }), 1);
+  assert.equal(second.items[0].evaluationRunId, valid.evaluationRunId);
+  assert.equal(second.items[0].classification, 'intent_materialized');
+  assert.equal(count(db, 'forecast_notification_intents'), 1);
+  db.close();
+});
+
 test('replay is idempotent, database uniqueness is authoritative, and profiles are isolated', async () => {
   const db = database();
   const { projector } = services(db);
@@ -479,6 +501,35 @@ test('replay recovers crashes before intent persistence and after an orphan inte
       source.evaluationRunId);
     db.close();
   }
+});
+
+test('an operational preference read failure never becomes a projected source outcome', async () => {
+  const db = database();
+  const runtime = new Runtime();
+  const binding = d1(db);
+  const repository = new D1NotificationRepository(binding);
+  await new NotificationProjectorService(repository, runtime).project(projection('commit'), 1);
+  const source = insertSource(db, { createdAt: '2026-08-25T06:31:00.000Z' });
+  class PreferenceFailureRepository extends D1NotificationRepository {
+    override async getCurrentPreference(): ReturnType<D1NotificationRepository['getCurrentPreference']> {
+      throw new Error('simulated_preference_storage_failure');
+    }
+  }
+  await assert.rejects(
+    new NotificationProjectorService(
+      new PreferenceFailureRepository(binding), runtime,
+    ).project(projection('commit'), 1),
+    /simulated_preference_storage_failure/u,
+  );
+  assert.equal(count(db, 'forecast_notification_projection_items'), 0);
+  assert.equal(count(db, 'forecast_notification_intents'), 0);
+  assert.equal((await repository.getBaseline(1, NOTIFICATION_PROJECTOR_VERSION))?.lastEvaluationRunId, 0);
+
+  const recovered = await new NotificationProjectorService(repository, runtime)
+    .project(projection('commit'), 1);
+  assert.equal(recovered.items[0].evaluationRunId, source.evaluationRunId);
+  assert.equal(recovered.items[0].classification, 'intent_materialized');
+  db.close();
 });
 
 test('preference revisions are append-preserving and do not release an existing suppression', async () => {

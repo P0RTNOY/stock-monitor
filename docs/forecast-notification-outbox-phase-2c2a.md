@@ -77,7 +77,7 @@ Consequently, the same evaluation run, cutoff replay, coordinator replay, schedu
 
 Projection input requires an explicit canonical UTC cutoff, an internally resolved trusted profile, a limit from 1 through 100, and an optional opaque cursor. The default limit is 25 and the default mode is `dry_run`.
 
-Sources are selected in increasing `evaluation_runs.id` order. The cursor carries the last evaluation-run ID plus its creation time for cutoff auditing; source time is not used as an unstable offset. A source after the injected cutoff stops the scan without advancing around it. Cursors are versioned, checksummed, profile/cutoff-bound, canonical base64url documents and must be passed back unchanged.
+Sources are selected in increasing `evaluation_runs.id` order. The cursor carries the last evaluation-run ID plus its validated creation time for cutoff auditing; that timestamp is `null` only when the source itself is quarantined for a malformed timestamp. Source time is not used as an unstable offset. A source after the injected cutoff stops the scan without advancing around it. Cursors are versioned, checksummed, profile/cutoff-bound, canonical base64url documents and must be passed back unchanged.
 
 In commit mode, processing one source durably records its projection classification before advancing the checkpoint. A valid source writes its immutable intent, policy decision, initial outbox row, and projection item as one logical transaction. An excluded or malformed source writes an append-preserving projection classification so one poisoned row cannot block unrelated later records. Database uniqueness turns replay and concurrent insertion into reuse, not duplication.
 

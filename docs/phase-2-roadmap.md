@@ -15,7 +15,7 @@ Phase 2A implements the trustworthy manual-evaluation slice:
 
 The implementation is documented in [`forecast-evaluation-phase-2a.md`](forecast-evaluation-phase-2a.md), with normative policy in [`forecast-evaluation-ruleset-v1.md`](forecast-evaluation-ruleset-v1.md).
 
-The Phase 2A browser workflow remains manual. Batch coordination is implemented separately in Phase 2B and controlled scheduling in Phase 2C1; delivery, global accuracy analytics, authentication, and multi-user isolation remain absent. Remote Cloudflare D1 execution and browser end-to-end behavior have not been verified.
+The Phase 2A browser workflow remains manual. Batch coordination is implemented separately in Phase 2B, controlled scheduling in Phase 2C1, the durable notification outbox in Phase 2C2A, and verified email delivery in Phase 2C2B. Global accuracy analytics, authentication, and multi-user isolation remain absent. Remote Cloudflare D1 execution, live delivery, and browser end-to-end behavior have not been verified.
 
 ## Phase 2B — complete
 
@@ -30,7 +30,7 @@ Phase 2B implements the bounded, idempotent, operator-invoked due-forecast coord
 - same-key replay, same-cutoff retry limits, crash-safe resume with the original cutoff, and dry-run without provider or forecast-domain mutation;
 - concise human output and machine-readable JSON through the non-public `npm run forecast:coordinate` operator command.
 
-There is no public batch endpoint or browser automation control. Phase 2C1 attaches the coordinator to a scheduled Worker boundary, but no email, push, webhook, or SMS delivery exists. Automated verification uses deterministic fixtures and local SQLite/D1-compatible boundaries; it does not establish remote D1 behavior, deployed operator security, live provider behavior, or operating-system process recovery.
+There is no public batch endpoint or browser automation control. Phase 2C1 attaches the coordinator to a scheduled Worker boundary, while Phase 2C2A/2C2B remain downstream and never send from the coordinator loop. Automated verification uses deterministic fixtures and local SQLite/D1-compatible boundaries; it does not establish remote D1 behavior, deployed operator security, live provider behavior, or operating-system process recovery.
 
 ## Phase 2C1 — complete
 
@@ -61,27 +61,44 @@ Phase 2C2A implements the durable notification outbox foundation defined in [`fo
 - safe local dry-run/commit projection and read-only status command boundaries, with historical inspection restricted to dry-run;
 - additive migration `market-monitor-web/drizzle/0006_late_wasp.sql` without applying it remotely.
 
-Phase 2C2A does not add an external provider, production template, verified recipient, browser notification API, notification dispatcher, Worker integration, or Cron. It leaves the Phase 2C1 Worker and schedule unchanged. Authentication/tenant isolation, remote D1 behavior, and deployed delivery remain unverified.
+Phase 2C2A itself does not add an external provider, production template, verified recipient, browser notification API, notification dispatcher, Worker integration, or Cron. Phase 2C2B consumes it without changing its authoritative source identities. Authentication/tenant isolation, remote D1 behavior, and deployed delivery remain unverified.
 
-## Phase 2C2B — exact next step
+## Phase 2C2B — complete
 
-Build delivery only behind the completed outbox boundary:
+Phase 2C2B implements the verified email delivery foundation defined in [`forecast-email-delivery-phase-2c2b.md`](forecast-email-delivery-phase-2c2b.md):
 
-1. Add authenticated verified recipients and explicit per-channel consent, revocation, and unsubscribe semantics; never invent an address, token, or URL from profile data.
-2. Add bounded informational templates that consume only the persisted versioned notification payload and cannot turn journal facts into trading advice.
-3. Implement one explicitly configured provider adapter with sanitized results and provider idempotency keys; do not accept arbitrary webhook destinations.
-4. Recheck current consent immediately before every provider call so revocation suppresses unsent pending work, while later opt-in never releases an old suppressed decision.
-5. Add a separately configured, default-disabled dispatcher with bounded claims, lease renewal/takeover, retry execution, dead-letter inspection, structured observability, and a kill switch. Do not send from the Phase 2C1 coordinator loop.
-6. Define and test reconciliation for the external ambiguity where a provider accepts a message but the local success write fails. Do not claim exactly-once delivery without provider evidence.
-7. Verify migration `0006`, provider credentials, remote D1 concurrency, deployed runtime limits, alerting, rollback, and consent behavior in staging before any production enablement.
+- profile-owned pending, verified, revoked, replaced, and provider-suppressed recipient states with conservative address normalization and masked output;
+- expiring single-use verification capabilities stored hash-only, with scanner-safe `GET` and explicit confirmation `POST` semantics;
+- append-preserved recipient-bound email master/category consent separate from Phase 2C2A notification consent;
+- deterministic bounded `en-US` verification and forecast templates with escaped HTML, safe links, informational language, content hashes, and unsubscribe headers;
+- a fixed-endpoint Resend adapter with strict configuration, bounded requests/responses, sanitized classifications, and persisted deterministic idempotency/request identity;
+- a final authoritative recipient, consent, preference, quiet-hours, claim, configuration, template, and prior-acceptance check immediately before provider access;
+- a sequential bounded manual dispatcher with dry-run default, explicit live-send gates, fenced claims, per-item isolation, retry/dead-letter handling, and no Cron registration;
+- explicit separation between provider acceptance and final delivery, including ambiguous acceptance recovery without an exactly-once claim;
+- raw-body Resend/Svix webhook verification, provider-event deduplication, deterministic status precedence, and bounce/complaint suppression;
+- visible and one-click unsubscribe that appends consent revocation without deleting historical evidence; and
+- additive migration `market-monitor-web/drizzle/0007_late_amphibian.sql` without applying it remotely.
 
-Phase 2C2B must preserve Phase 2A evidence, Phase 2B coordination safety, Phase 2C1 replay semantics, and Phase 2C2A intent identity. Additional channels, an in-app notification center, unread state, global analytics, authentication beyond the recipient boundary, and public multi-user operation remain later work unless separately designed and authorized.
+No live Resend call, remote D1 migration, Worker deployment, webhook registration, sender-domain/DNS change, or email dispatcher Cron activation was performed. Resend acceptance/delivery, remote concurrency, production operator security, and process-kill recovery remain unverified. Recipient verification is not user authentication, and the fixed profile remains unsuitable for public multi-user operation.
+
+## Phase 2C2C — exact next step
+
+Build a durable in-app Notification Center without bypassing the trusted evidence and outbox contracts:
+
+1. Materialize profile-scoped in-app entries from existing intents, with deterministic identity and no reevaluation.
+2. Add append-preserved read/unread timestamps and bounded stable pagination.
+3. Deep-link each item to immutable forecast, review, evaluation, and delivery evidence where available.
+4. Present suppressed, deferred, ambiguous, dead-letter, and delivered states honestly rather than treating all notifications as successful.
+5. Add channel-preference and recipient-management UI only behind real authentication, authorization, and tenant isolation.
+6. Design a separately authorized dispatcher schedule only after remote D1 migration, Resend domain/sender, deployed webhook, consent, observability, alerting, rollback, and kill-switch behavior are verified.
+
+Phase 2C2C has not started. It must not activate email dispatch scheduling as an incidental implementation step, expose recipient administration publicly, add other external channels, or weaken Phase 2C2B consent/idempotency/reconciliation guarantees.
 
 ## Later sequence
 
-1. **Production coordination and delivery**
-   - Complete Phase 2C2B verified delivery and the remaining authentication/remote-runtime verification above.
-   - Preserve bounded execution, replay safety, and duplicate-delivery protection.
+1. **In-app notifications and authorized production delivery**
+   - Complete the Phase 2C2C Notification Center and the remaining authentication/remote-runtime/provider verification above.
+   - Preserve bounded execution, replay safety, consent, redaction, and duplicate-delivery protection.
 
 2. **Accuracy and calibration analytics**
    - Compute results by direction, setup tag, horizon, confidence bucket, and analysis-scenario type.

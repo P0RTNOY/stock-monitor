@@ -266,16 +266,10 @@ npm run build
 
 Local tests and operator inspection do not prove that migration `0006` is applied remotely, a deployed build contains these contracts, remote D1 transaction behavior matches local emulation, a production identity or recipient is verified, or an external delivery provider is configured. No Worker deployment, remote migration, Cron activation, or real notification delivery is part of Phase 2C2A.
 
-## Exact Phase 2C2B boundary
+## Phase 2C2B handoff
 
-Phase 2C2B begins only after this durable foundation. Its scope is:
+Phase 2C2B now consumes this durable foundation through the contract in [`forecast-email-delivery-phase-2c2b.md`](forecast-email-delivery-phase-2c2b.md). It adds a verified profile-owned recipient, separate recipient-bound email consent, bounded informational templates, a fixed Resend adapter, deterministic provider idempotency, final pre-send reauthorization, manual disabled-by-default dispatch, verified webhook reconciliation, suppression, and unsubscribe.
 
-1. Add an authenticated, verified recipient and channel model with channel-specific consent and unsubscribe/revocation behavior.
-2. Add bounded informational templates that consume only the persisted versioned payload.
-3. Implement one explicitly configured provider adapter behind the outbox claim contract; never accept arbitrary destination URLs.
-4. Recheck current master/category/channel consent immediately before the provider call and durably suppress an unsent item after revocation.
-5. Add a separately configured, default-disabled dispatcher boundary with bounded claims, lease renewal/takeover, retry execution, provider idempotency keys, delivery reconciliation, and sanitized observability.
-6. Define the unavoidable “provider accepted but local success write failed” ambiguity and the provider-specific reconciliation policy; do not claim exactly-once external delivery without evidence.
-7. Verify the remote D1 migration, staging provider credentials, deployed runtime limits, alerting, kill switch, and rollback before production enablement.
+That channel does not change Phase 2C2A source identities, payloads, projection checkpoints, or claim/retry authority. It does not reevaluate forecasts, make Phase 2B or Phase 2C1 success depend on messaging, expose a browser dispatch API, or send from the Phase 2C1 scheduler loop. Verification is not authentication, provider acceptance is not final delivery, and no live send, remote migration, deployment, Resend configuration, or dispatcher Cron was performed.
 
-Phase 2C2B must not reevaluate forecasts, mutate Phase 2A evidence, make Phase 2B/2C1 success depend on messaging, expose a browser dispatch API, or send directly from the Phase 2C1 scheduler loop. In-app notification centers, unread state, additional channels, global analytics, and public multi-user operation remain later work unless separately designed and authorized.
+Phase 2C2C has not started. Its bounded next scope is an in-app Notification Center, read/unread state, deep links to immutable evidence, authenticated preference UI, and only then carefully authorized dispatcher scheduling after remote-runtime verification.

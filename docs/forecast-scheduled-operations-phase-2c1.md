@@ -204,8 +204,10 @@ If necessary, remove or change the Cron trigger in deployment configuration thro
 - The fixed profile is not authentication or tenant isolation.
 - The single daily UTC cadence does not promise immediate processing for all exchanges.
 - Phase 2C1 emits logs but does not add an external alerting destination.
-- No notification or delivery semantics exist.
+- Notification and email-delivery semantics now exist downstream in Phase 2C2A/2C2B, but remain independent of this scheduler.
 
-## Exact Phase 2C2 boundary
+## Phase 2C2 separation
 
-Phase 2C2 should begin with a durable notification outbox derived only from persisted trusted forecast/evaluation events. It should define delivery policy, user consent and preferences, deduplication keys, quiet hours/retry behavior, channel adapters, and append-preserving delivery history. It must never make evaluation decisions, rewrite Phase 2A evidence, use scheduler logs as the source of truth, or send directly from the Phase 2C1 page loop. Phase 2C1 does not begin that work.
+Phase 2C2A now provides the durable notification outbox in [`forecast-notification-outbox-phase-2c2a.md`](forecast-notification-outbox-phase-2c2a.md), and Phase 2C2B provides the manual verified-email foundation in [`forecast-email-delivery-phase-2c2b.md`](forecast-email-delivery-phase-2c2b.md). Both derive from persisted trusted evaluation evidence and remain operationally separate from this scheduled coordinator.
+
+The Phase 2C1 page loop does not project, claim, render, or deliver notifications. No email dispatcher Cron was added. A later authorized dispatcher schedule must use the Phase 2C2B boundary, preserve its kill switch and final consent recheck, and must not make evaluation depend on delivery.

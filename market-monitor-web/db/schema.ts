@@ -492,7 +492,328 @@ export const analysisSnapshots = sqliteTable('analysis_snapshots', {
   createdAt: text('created_at').notNull(),
 }, (table) => [
   uniqueIndex('idx_analysis_snapshots_forecast').on(table.forecastId),
+  uniqueIndex('idx_analysis_snapshots_id_profile').on(table.id, table.profileId),
   index('idx_analysis_snapshots_profile_symbol').on(table.profileId, table.symbol, table.createdAt),
   check('analysis_snapshots_range_check', sql`${table.rangeLower} > 0 AND ${table.rangeUpper} > ${table.rangeLower} AND ${table.rangeHeight} > 0`),
   check('analysis_snapshots_direction_check', sql`${table.direction} IN ('bullish', 'bearish', 'undetermined')`),
+]);
+
+export const forecastNotificationProjectionCheckpoints = sqliteTable('forecast_notification_projection_checkpoints', {
+  profileId: integer('profile_id').notNull().references(() => investmentProfiles.id, { onDelete: 'cascade' }),
+  projectorVersion: text('projector_version').notNull(),
+  baselineEvaluationRunId: integer('baseline_evaluation_run_id').notNull(),
+  lastEvaluationRunId: integer('last_evaluation_run_id').notNull(),
+  activatedAt: text('activated_at').notNull(),
+  leaseToken: text('lease_token'),
+  leaseExpiresAt: text('lease_expires_at'),
+  recoveryCount: integer('recovery_count').notNull().default(0),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  primaryKey({
+    columns: [table.profileId, table.projectorVersion],
+    name: 'forecast_notification_projection_checkpoints_pk',
+  }),
+  index('idx_forecast_notification_projection_checkpoints_lease').on(table.leaseExpiresAt),
+  check('forecast_notification_projection_checkpoints_cursor_check', sql`${table.baselineEvaluationRunId} >= 0 AND ${table.lastEvaluationRunId} >= ${table.baselineEvaluationRunId}`),
+  check('forecast_notification_projection_checkpoints_lease_check', sql`(${table.leaseToken} IS NULL AND ${table.leaseExpiresAt} IS NULL) OR (${table.leaseToken} IS NOT NULL AND ${table.leaseExpiresAt} IS NOT NULL)`),
+  check('forecast_notification_projection_checkpoints_recovery_check', sql`${table.recoveryCount} >= 0`),
+]);
+
+export const forecastNotificationPreferenceRevisions = sqliteTable('forecast_notification_preference_revisions', {
+  profileId: integer('profile_id').notNull().references(() => investmentProfiles.id, { onDelete: 'cascade' }),
+  revision: integer('revision').notNull(),
+  preferenceVersion: text('preference_version').notNull(),
+  masterConsent: integer('master_consent', { mode: 'boolean' }).notNull().default(false),
+  targetHitEnabled: integer('target_hit_enabled', { mode: 'boolean' }).notNull().default(false),
+  invalidatedEnabled: integer('invalidated_enabled', { mode: 'boolean' }).notNull().default(false),
+  expiredEnabled: integer('expired_enabled', { mode: 'boolean' }).notNull().default(false),
+  needsReviewEnabled: integer('needs_review_enabled', { mode: 'boolean' }).notNull().default(false),
+  timezone: text('timezone').notNull(),
+  quietHoursStart: text('quiet_hours_start'),
+  quietHoursEnd: text('quiet_hours_end'),
+  changeSource: text('change_source').notNull(),
+  changeReason: text('change_reason').notNull().default(''),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  primaryKey({
+    columns: [table.profileId, table.revision],
+    name: 'forecast_notification_preference_revisions_pk',
+  }),
+  index('idx_forecast_notification_preference_revisions_created').on(table.profileId, table.createdAt, table.revision),
+  check('forecast_notification_preference_revisions_revision_check', sql`${table.revision} > 0`),
+  check('forecast_notification_preference_revisions_booleans_check', sql`${table.masterConsent} IN (0, 1)
+    AND ${table.targetHitEnabled} IN (0, 1) AND ${table.invalidatedEnabled} IN (0, 1)
+    AND ${table.expiredEnabled} IN (0, 1) AND ${table.needsReviewEnabled} IN (0, 1)`),
+  check('forecast_notification_preference_revisions_quiet_hours_check', sql`(
+    ${table.quietHoursStart} IS NULL AND ${table.quietHoursEnd} IS NULL
+  ) OR (
+    ${table.quietHoursStart} IS NOT NULL AND ${table.quietHoursEnd} IS NOT NULL
+    AND length(${table.quietHoursStart}) = 5 AND length(${table.quietHoursEnd}) = 5
+    AND ${table.quietHoursStart} <> ${table.quietHoursEnd}
+  )`),
+]);
+
+export const forecastNotificationPreferences = sqliteTable('forecast_notification_preferences', {
+  profileId: integer('profile_id').primaryKey().references(() => investmentProfiles.id, { onDelete: 'cascade' }),
+  currentRevision: integer('current_revision').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  foreignKey({
+    columns: [table.profileId, table.currentRevision],
+    foreignColumns: [forecastNotificationPreferenceRevisions.profileId, forecastNotificationPreferenceRevisions.revision],
+    name: 'forecast_notification_preferences_revision_fk',
+  }),
+  check('forecast_notification_preferences_revision_check', sql`${table.currentRevision} > 0`),
+]);
+
+export const forecastNotificationIntents = sqliteTable('forecast_notification_intents', {
+  id: text('id').primaryKey(),
+  profileId: integer('profile_id').notNull().references(() => investmentProfiles.id, { onDelete: 'cascade' }),
+  forecastId: integer('forecast_id').notNull(),
+  evaluationRunId: integer('evaluation_run_id').notNull(),
+  reviewItemId: integer('review_item_id').notNull(),
+  analysisSnapshotId: integer('analysis_snapshot_id'),
+  category: text('category').notNull(),
+  dedupContractVersion: text('dedup_contract_version').notNull(),
+  projectorVersion: text('projector_version').notNull(),
+  payloadSchemaVersion: text('payload_schema_version').notNull(),
+  dedupKey: text('dedup_key').notNull(),
+  payloadJson: text('payload_json').notNull(),
+  payloadFingerprint: text('payload_fingerprint').notNull(),
+  eventOccurredAt: text('event_occurred_at').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_forecast_notification_intents_id_profile').on(table.id, table.profileId),
+  uniqueIndex('idx_forecast_notification_intents_dedup_key').on(table.dedupKey),
+  uniqueIndex('idx_forecast_notification_intents_source_category').on(
+    table.profileId,
+    table.evaluationRunId,
+    table.category,
+  ),
+  index('idx_forecast_notification_intents_profile_created').on(table.profileId, table.createdAt, table.id),
+  index('idx_forecast_notification_intents_profile_category').on(table.profileId, table.category, table.createdAt),
+  foreignKey({
+    columns: [table.forecastId, table.profileId],
+    foreignColumns: [forecasts.id, forecasts.profileId],
+    name: 'forecast_notification_intents_forecast_profile_fk',
+  }),
+  foreignKey({
+    columns: [table.evaluationRunId, table.profileId],
+    foreignColumns: [evaluationRuns.id, evaluationRuns.profileId],
+    name: 'forecast_notification_intents_evaluation_profile_fk',
+  }),
+  foreignKey({
+    columns: [table.reviewItemId, table.profileId],
+    foreignColumns: [forecastReviewItems.id, forecastReviewItems.profileId],
+    name: 'forecast_notification_intents_review_profile_fk',
+  }),
+  foreignKey({
+    columns: [table.analysisSnapshotId, table.profileId],
+    foreignColumns: [analysisSnapshots.id, analysisSnapshots.profileId],
+    name: 'forecast_notification_intents_snapshot_profile_fk',
+  }),
+  check('forecast_notification_intents_category_check', sql`${table.category} IN ('target_hit', 'invalidated', 'expired', 'needs_review')`),
+  check('forecast_notification_intents_dedup_key_check', sql`length(${table.dedupKey}) = 64`),
+  check('forecast_notification_intents_payload_check', sql`json_valid(${table.payloadJson})`),
+  check('forecast_notification_intents_payload_fingerprint_check', sql`length(${table.payloadFingerprint}) = 64`),
+]);
+
+export const forecastNotificationPolicyDecisions = sqliteTable('forecast_notification_policy_decisions', {
+  id: text('id').primaryKey(),
+  intentId: text('intent_id').notNull(),
+  profileId: integer('profile_id').notNull(),
+  policyVersion: text('policy_version').notNull(),
+  preferenceRevision: integer('preference_revision'),
+  decision: text('decision').notNull(),
+  reasonCode: text('reason_code').notNull(),
+  decidedAt: text('decided_at').notNull(),
+  earliestEligibleAt: text('earliest_eligible_at'),
+  warningsJson: text('warnings_json').notNull().default('[]'),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_forecast_notification_policy_decisions_id_profile').on(table.id, table.profileId),
+  uniqueIndex('idx_forecast_notification_policy_decisions_intent').on(table.intentId),
+  index('idx_forecast_notification_policy_decisions_profile_decided').on(table.profileId, table.decidedAt, table.id),
+  foreignKey({
+    columns: [table.intentId, table.profileId],
+    foreignColumns: [forecastNotificationIntents.id, forecastNotificationIntents.profileId],
+    name: 'forecast_notification_policy_decisions_intent_profile_fk',
+  }).onDelete('cascade'),
+  foreignKey({
+    columns: [table.profileId, table.preferenceRevision],
+    foreignColumns: [forecastNotificationPreferenceRevisions.profileId, forecastNotificationPreferenceRevisions.revision],
+    name: 'forecast_notification_policy_decisions_preference_revision_fk',
+  }),
+  check('forecast_notification_policy_decisions_decision_check', sql`${table.decision} IN ('eligible', 'deferred_quiet_hours', 'suppressed_no_consent', 'suppressed_category_disabled', 'suppressed_unsupported_category', 'suppressed_historical_cutover')`),
+  check('forecast_notification_policy_decisions_earliest_check', sql`(
+    ${table.decision} = 'deferred_quiet_hours' AND ${table.earliestEligibleAt} IS NOT NULL
+  ) OR (
+    ${table.decision} <> 'deferred_quiet_hours' AND ${table.earliestEligibleAt} IS NULL
+  )`),
+  check('forecast_notification_policy_decisions_warnings_check', sql`json_valid(${table.warningsJson})`),
+]);
+
+export const forecastNotificationOutbox = sqliteTable('forecast_notification_outbox', {
+  id: text('id').primaryKey(),
+  intentId: text('intent_id').notNull(),
+  policyDecisionId: text('policy_decision_id').notNull(),
+  profileId: integer('profile_id').notNull(),
+  retryPolicyVersion: text('retry_policy_version').notNull(),
+  quietHoursPolicyVersion: text('quiet_hours_policy_version').notNull(),
+  state: text('state').notNull(),
+  availableAt: text('available_at'),
+  attemptCount: integer('attempt_count').notNull().default(0),
+  leaseToken: text('lease_token'),
+  leaseExpiresAt: text('lease_expires_at'),
+  lastAttemptAt: text('last_attempt_at'),
+  succeededAt: text('succeeded_at'),
+  deadLetteredAt: text('dead_lettered_at'),
+  lastFailureCategory: text('last_failure_category'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_forecast_notification_outbox_id_profile').on(table.id, table.profileId),
+  uniqueIndex('idx_forecast_notification_outbox_intent').on(table.intentId),
+  uniqueIndex('idx_forecast_notification_outbox_policy_decision').on(table.policyDecisionId),
+  uniqueIndex('idx_forecast_notification_outbox_lease_token').on(table.leaseToken),
+  index('idx_forecast_notification_outbox_profile_state_available').on(table.profileId, table.state, table.availableAt, table.id),
+  index('idx_forecast_notification_outbox_state_lease').on(table.state, table.leaseExpiresAt),
+  foreignKey({
+    columns: [table.intentId, table.profileId],
+    foreignColumns: [forecastNotificationIntents.id, forecastNotificationIntents.profileId],
+    name: 'forecast_notification_outbox_intent_profile_fk',
+  }).onDelete('cascade'),
+  foreignKey({
+    columns: [table.policyDecisionId, table.profileId],
+    foreignColumns: [forecastNotificationPolicyDecisions.id, forecastNotificationPolicyDecisions.profileId],
+    name: 'forecast_notification_outbox_policy_profile_fk',
+  }).onDelete('cascade'),
+  check('forecast_notification_outbox_state_check', sql`${table.state} IN ('pending', 'deferred', 'suppressed', 'claimed', 'retry_scheduled', 'succeeded', 'dead_letter')`),
+  check('forecast_notification_outbox_attempt_count_check', sql`${table.attemptCount} >= 0 AND (
+    (${table.state} IN ('pending', 'deferred', 'suppressed') AND ${table.attemptCount} = 0)
+    OR (${table.state} IN ('claimed', 'retry_scheduled', 'succeeded', 'dead_letter') AND ${table.attemptCount} > 0)
+  )`),
+  check('forecast_notification_outbox_available_check', sql`${table.state} IN ('suppressed', 'succeeded', 'dead_letter') OR ${table.availableAt} IS NOT NULL`),
+  check('forecast_notification_outbox_lease_check', sql`(
+    ${table.state} = 'claimed' AND ${table.leaseToken} IS NOT NULL AND ${table.leaseExpiresAt} IS NOT NULL
+  ) OR (
+    ${table.state} <> 'claimed' AND ${table.leaseToken} IS NULL AND ${table.leaseExpiresAt} IS NULL
+  )`),
+  check('forecast_notification_outbox_success_check', sql`(
+    ${table.state} = 'succeeded' AND ${table.succeededAt} IS NOT NULL
+  ) OR (
+    ${table.state} <> 'succeeded' AND ${table.succeededAt} IS NULL
+  )`),
+  check('forecast_notification_outbox_dead_letter_check', sql`(
+    ${table.state} = 'dead_letter' AND ${table.deadLetteredAt} IS NOT NULL
+  ) OR (
+    ${table.state} <> 'dead_letter' AND ${table.deadLetteredAt} IS NULL
+  )`),
+]);
+
+export const forecastNotificationProjectionItems = sqliteTable('forecast_notification_projection_items', {
+  id: text('id').primaryKey(),
+  profileId: integer('profile_id').notNull(),
+  projectorVersion: text('projector_version').notNull(),
+  evaluationRunId: integer('evaluation_run_id').notNull(),
+  intentId: text('intent_id'),
+  category: text('category'),
+  dedupKey: text('dedup_key'),
+  classification: text('classification').notNull(),
+  reasonCode: text('reason_code').notNull(),
+  sourceCreatedAt: text('source_created_at').notNull(),
+  warningsJson: text('warnings_json').notNull().default('[]'),
+  processedAt: text('processed_at').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_forecast_notification_projection_items_source').on(
+    table.profileId,
+    table.projectorVersion,
+    table.evaluationRunId,
+  ),
+  uniqueIndex('idx_forecast_notification_projection_items_intent').on(table.intentId),
+  index('idx_forecast_notification_projection_items_profile_processed').on(table.profileId, table.processedAt, table.id),
+  foreignKey({
+    columns: [table.profileId, table.projectorVersion],
+    foreignColumns: [forecastNotificationProjectionCheckpoints.profileId, forecastNotificationProjectionCheckpoints.projectorVersion],
+    name: 'forecast_notification_projection_items_checkpoint_fk',
+  }).onDelete('cascade'),
+  foreignKey({
+    columns: [table.evaluationRunId, table.profileId],
+    foreignColumns: [evaluationRuns.id, evaluationRuns.profileId],
+    name: 'forecast_notification_projection_items_evaluation_profile_fk',
+  }),
+  foreignKey({
+    columns: [table.intentId, table.profileId],
+    foreignColumns: [forecastNotificationIntents.id, forecastNotificationIntents.profileId],
+    name: 'forecast_notification_projection_items_intent_profile_fk',
+  }),
+  check('forecast_notification_projection_items_category_check', sql`${table.category} IS NULL OR ${table.category} IN ('target_hit', 'invalidated', 'expired', 'needs_review')`),
+  check('forecast_notification_projection_items_dedup_check', sql`${table.dedupKey} IS NULL OR length(${table.dedupKey}) = 64`),
+  check('forecast_notification_projection_items_classification_check', sql`${table.classification} IN ('intent_materialized', 'excluded_no_change', 'excluded_unsupported', 'invalid_source_needs_review')`),
+  check('forecast_notification_projection_items_materialization_check', sql`(
+    ${table.classification} = 'intent_materialized'
+    AND ${table.intentId} IS NOT NULL AND ${table.category} IS NOT NULL AND ${table.dedupKey} IS NOT NULL
+  ) OR (
+    ${table.classification} <> 'intent_materialized'
+    AND ${table.intentId} IS NULL AND ${table.category} IS NULL AND ${table.dedupKey} IS NULL
+  )`),
+  check('forecast_notification_projection_items_warnings_check', sql`json_valid(${table.warningsJson})`),
+]);
+
+export const forecastNotificationDeliveryAttempts = sqliteTable('forecast_notification_delivery_attempts', {
+  id: text('id').primaryKey(),
+  outboxId: text('outbox_id').notNull(),
+  profileId: integer('profile_id').notNull(),
+  attemptNumber: integer('attempt_number').notNull(),
+  ownerToken: text('owner_token').notNull(),
+  state: text('state').notNull(),
+  retryPolicyVersion: text('retry_policy_version').notNull(),
+  adapterKind: text('adapter_kind').notNull(),
+  adapterVersion: text('adapter_version').notNull(),
+  startedAt: text('started_at').notNull(),
+  finishedAt: text('finished_at'),
+  failureClassification: text('failure_classification'),
+  redactedErrorCategory: text('redacted_error_category'),
+  nextAttemptAt: text('next_attempt_at'),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_forecast_notification_attempts_outbox_number').on(table.outboxId, table.attemptNumber),
+  uniqueIndex('idx_forecast_notification_attempts_owner_token').on(table.ownerToken),
+  uniqueIndex('idx_forecast_notification_attempts_started').on(table.outboxId)
+    .where(sql`${table.state} = 'started'`),
+  uniqueIndex('idx_forecast_notification_attempts_succeeded').on(table.outboxId)
+    .where(sql`${table.state} = 'succeeded'`),
+  index('idx_forecast_notification_attempts_profile_created').on(table.profileId, table.createdAt, table.id),
+  foreignKey({
+    columns: [table.outboxId, table.profileId],
+    foreignColumns: [forecastNotificationOutbox.id, forecastNotificationOutbox.profileId],
+    name: 'forecast_notification_attempts_outbox_profile_fk',
+  }).onDelete('cascade'),
+  check('forecast_notification_attempts_number_check', sql`${table.attemptNumber} > 0`),
+  check('forecast_notification_attempts_state_check', sql`${table.state} IN ('started', 'succeeded', 'retry_scheduled', 'terminal_failure', 'interrupted')`),
+  check('forecast_notification_attempts_failure_classification_check', sql`${table.failureClassification} IS NULL OR ${table.failureClassification} IN ('retryable', 'terminal', 'interrupted')`),
+  check('forecast_notification_attempts_completion_check', sql`(
+    ${table.state} = 'started' AND ${table.finishedAt} IS NULL
+      AND ${table.failureClassification} IS NULL AND ${table.redactedErrorCategory} IS NULL
+      AND ${table.nextAttemptAt} IS NULL
+  ) OR (
+    ${table.state} = 'succeeded' AND ${table.finishedAt} IS NOT NULL
+      AND ${table.failureClassification} IS NULL AND ${table.redactedErrorCategory} IS NULL
+      AND ${table.nextAttemptAt} IS NULL
+  ) OR (
+    ${table.state} = 'retry_scheduled' AND ${table.finishedAt} IS NOT NULL
+      AND ${table.failureClassification} = 'retryable' AND ${table.redactedErrorCategory} IS NOT NULL
+      AND ${table.nextAttemptAt} IS NOT NULL
+  ) OR (
+    ${table.state} = 'terminal_failure' AND ${table.finishedAt} IS NOT NULL
+      AND ${table.failureClassification} IN ('retryable', 'terminal') AND ${table.redactedErrorCategory} IS NOT NULL
+      AND ${table.nextAttemptAt} IS NULL
+  ) OR (
+    ${table.state} = 'interrupted' AND ${table.finishedAt} IS NOT NULL
+      AND ${table.failureClassification} = 'interrupted' AND ${table.redactedErrorCategory} IS NOT NULL
+      AND ${table.nextAttemptAt} IS NULL
+  )`),
 ]);

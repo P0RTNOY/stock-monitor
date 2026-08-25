@@ -43,6 +43,13 @@
       "when": 1787665521210,
       "tag": "0005_thin_ikaris",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1787669355518,
+      "tag": "0006_late_wasp",
+      "breakpoints": true
     }
   ]
 }

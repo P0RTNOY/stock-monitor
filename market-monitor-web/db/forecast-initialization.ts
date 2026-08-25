@@ -85,6 +85,7 @@ export function forecastInitializationStatements() {
       FOREIGN KEY (profile_id) REFERENCES investment_profiles(id) ON DELETE CASCADE
     )`,
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_snapshots_forecast ON analysis_snapshots(forecast_id)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_snapshots_id_profile ON analysis_snapshots(id, profile_id)',
     'CREATE INDEX IF NOT EXISTS idx_analysis_snapshots_profile_symbol ON analysis_snapshots(profile_id, symbol, created_at)',
     `CREATE TABLE IF NOT EXISTS evaluation_runs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -324,6 +325,208 @@ export function forecastInitializationStatements() {
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_scheduler_pages_profile_key ON forecast_scheduler_pages(profile_id, operator_run_key)',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_scheduler_pages_coordinator_run ON forecast_scheduler_pages(coordinator_run_id)',
     'CREATE INDEX IF NOT EXISTS idx_forecast_scheduler_pages_invocation_state ON forecast_scheduler_pages(invocation_id, state, page_number)',
+    `CREATE TABLE IF NOT EXISTS forecast_notification_projection_checkpoints (
+      profile_id INTEGER NOT NULL,
+      projector_version TEXT NOT NULL,
+      baseline_evaluation_run_id INTEGER NOT NULL,
+      last_evaluation_run_id INTEGER NOT NULL,
+      activated_at TEXT NOT NULL,
+      lease_token TEXT,
+      lease_expires_at TEXT,
+      recovery_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (profile_id, projector_version),
+      CHECK (baseline_evaluation_run_id >= 0 AND last_evaluation_run_id >= baseline_evaluation_run_id),
+      CHECK ((lease_token IS NULL AND lease_expires_at IS NULL) OR (lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)),
+      CHECK (recovery_count >= 0),
+      FOREIGN KEY (profile_id) REFERENCES investment_profiles(id) ON DELETE CASCADE
+    )`,
+    'CREATE INDEX IF NOT EXISTS idx_forecast_notification_projection_checkpoints_lease ON forecast_notification_projection_checkpoints(lease_expires_at)',
+    `CREATE TABLE IF NOT EXISTS forecast_notification_preference_revisions (
+      profile_id INTEGER NOT NULL,
+      revision INTEGER NOT NULL,
+      preference_version TEXT NOT NULL,
+      master_consent INTEGER NOT NULL DEFAULT false,
+      target_hit_enabled INTEGER NOT NULL DEFAULT false,
+      invalidated_enabled INTEGER NOT NULL DEFAULT false,
+      expired_enabled INTEGER NOT NULL DEFAULT false,
+      needs_review_enabled INTEGER NOT NULL DEFAULT false,
+      timezone TEXT NOT NULL,
+      quiet_hours_start TEXT,
+      quiet_hours_end TEXT,
+      change_source TEXT NOT NULL,
+      change_reason TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (profile_id, revision),
+      CHECK (revision > 0),
+      CHECK (master_consent IN (0, 1) AND target_hit_enabled IN (0, 1)
+        AND invalidated_enabled IN (0, 1) AND expired_enabled IN (0, 1)
+        AND needs_review_enabled IN (0, 1)),
+      CHECK (
+        (quiet_hours_start IS NULL AND quiet_hours_end IS NULL)
+        OR (quiet_hours_start IS NOT NULL AND quiet_hours_end IS NOT NULL
+          AND length(quiet_hours_start) = 5 AND length(quiet_hours_end) = 5
+          AND quiet_hours_start <> quiet_hours_end)
+      ),
+      FOREIGN KEY (profile_id) REFERENCES investment_profiles(id) ON DELETE CASCADE
+    )`,
+    'CREATE INDEX IF NOT EXISTS idx_forecast_notification_preference_revisions_created ON forecast_notification_preference_revisions(profile_id, created_at, revision)',
+    `CREATE TABLE IF NOT EXISTS forecast_notification_preferences (
+      profile_id INTEGER PRIMARY KEY NOT NULL,
+      current_revision INTEGER NOT NULL CHECK (current_revision > 0),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (profile_id) REFERENCES investment_profiles(id) ON DELETE CASCADE,
+      FOREIGN KEY (profile_id, current_revision) REFERENCES forecast_notification_preference_revisions(profile_id, revision)
+    )`,
+    `CREATE TABLE IF NOT EXISTS forecast_notification_intents (
+      id TEXT PRIMARY KEY NOT NULL,
+      profile_id INTEGER NOT NULL,
+      forecast_id INTEGER NOT NULL,
+      evaluation_run_id INTEGER NOT NULL,
+      review_item_id INTEGER NOT NULL,
+      analysis_snapshot_id INTEGER,
+      category TEXT NOT NULL CHECK (category IN ('target_hit', 'invalidated', 'expired', 'needs_review')),
+      dedup_contract_version TEXT NOT NULL,
+      projector_version TEXT NOT NULL,
+      payload_schema_version TEXT NOT NULL,
+      dedup_key TEXT NOT NULL CHECK (length(dedup_key) = 64),
+      payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+      payload_fingerprint TEXT NOT NULL CHECK (length(payload_fingerprint) = 64),
+      event_occurred_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (profile_id) REFERENCES investment_profiles(id) ON DELETE CASCADE,
+      FOREIGN KEY (forecast_id, profile_id) REFERENCES forecasts(id, profile_id),
+      FOREIGN KEY (evaluation_run_id, profile_id) REFERENCES evaluation_runs(id, profile_id),
+      FOREIGN KEY (review_item_id, profile_id) REFERENCES forecast_review_items(id, profile_id),
+      FOREIGN KEY (analysis_snapshot_id, profile_id) REFERENCES analysis_snapshots(id, profile_id)
+    )`,
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_notification_intents_id_profile ON forecast_notification_intents(id, profile_id)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_notification_intents_dedup_key ON forecast_notification_intents(dedup_key)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_notification_intents_source_category ON forecast_notification_intents(profile_id, evaluation_run_id, category)',
+    'CREATE INDEX IF NOT EXISTS idx_forecast_notification_intents_profile_created ON forecast_notification_intents(profile_id, created_at, id)',
+    'CREATE INDEX IF NOT EXISTS idx_forecast_notification_intents_profile_category ON forecast_notification_intents(profile_id, category, created_at)',
+    `CREATE TABLE IF NOT EXISTS forecast_notification_policy_decisions (
+      id TEXT PRIMARY KEY NOT NULL,
+      intent_id TEXT NOT NULL,
+      profile_id INTEGER NOT NULL,
+      policy_version TEXT NOT NULL,
+      preference_revision INTEGER,
+      decision TEXT NOT NULL CHECK (decision IN ('eligible', 'deferred_quiet_hours', 'suppressed_no_consent', 'suppressed_category_disabled', 'suppressed_unsupported_category', 'suppressed_historical_cutover')),
+      reason_code TEXT NOT NULL,
+      decided_at TEXT NOT NULL,
+      earliest_eligible_at TEXT,
+      warnings_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(warnings_json)),
+      created_at TEXT NOT NULL,
+      CHECK (
+        (decision = 'deferred_quiet_hours' AND earliest_eligible_at IS NOT NULL)
+        OR (decision <> 'deferred_quiet_hours' AND earliest_eligible_at IS NULL)
+      ),
+      FOREIGN KEY (intent_id, profile_id) REFERENCES forecast_notification_intents(id, profile_id) ON DELETE CASCADE,
+      FOREIGN KEY (profile_id, preference_revision) REFERENCES forecast_notification_preference_revisions(profile_id, revision)
+    )`,
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_notification_policy_decisions_id_profile ON forecast_notification_policy_decisions(id, profile_id)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_notification_policy_decisions_intent ON forecast_notification_policy_decisions(intent_id)',
+    'CREATE INDEX IF NOT EXISTS idx_forecast_notification_policy_decisions_profile_decided ON forecast_notification_policy_decisions(profile_id, decided_at, id)',
+    `CREATE TABLE IF NOT EXISTS forecast_notification_outbox (
+      id TEXT PRIMARY KEY NOT NULL,
+      intent_id TEXT NOT NULL,
+      policy_decision_id TEXT NOT NULL,
+      profile_id INTEGER NOT NULL,
+      retry_policy_version TEXT NOT NULL,
+      quiet_hours_policy_version TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('pending', 'deferred', 'suppressed', 'claimed', 'retry_scheduled', 'succeeded', 'dead_letter')),
+      available_at TEXT,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      lease_token TEXT,
+      lease_expires_at TEXT,
+      last_attempt_at TEXT,
+      succeeded_at TEXT,
+      dead_lettered_at TEXT,
+      last_failure_category TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK (attempt_count >= 0 AND (
+        (state IN ('pending', 'deferred', 'suppressed') AND attempt_count = 0)
+        OR (state IN ('claimed', 'retry_scheduled', 'succeeded', 'dead_letter') AND attempt_count > 0)
+      )),
+      CHECK (state IN ('suppressed', 'succeeded', 'dead_letter') OR available_at IS NOT NULL),
+      CHECK (
+        (state = 'claimed' AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)
+        OR (state <> 'claimed' AND lease_token IS NULL AND lease_expires_at IS NULL)
+      ),
+      CHECK ((state = 'succeeded' AND succeeded_at IS NOT NULL) OR (state <> 'succeeded' AND succeeded_at IS NULL)),
+      CHECK ((state = 'dead_letter' AND dead_lettered_at IS NOT NULL) OR (state <> 'dead_letter' AND dead_lettered_at IS NULL)),
+      FOREIGN KEY (intent_id, profile_id) REFERENCES forecast_notification_intents(id, profile_id) ON DELETE CASCADE,
+      FOREIGN KEY (policy_decision_id, profile_id) REFERENCES forecast_notification_policy_decisions(id, profile_id) ON DELETE CASCADE
+    )`,
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_notification_outbox_id_profile ON forecast_notification_outbox(id, profile_id)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_notification_outbox_intent ON forecast_notification_outbox(intent_id)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_notification_outbox_policy_decision ON forecast_notification_outbox(policy_decision_id)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_notification_outbox_lease_token ON forecast_notification_outbox(lease_token)',
+    'CREATE INDEX IF NOT EXISTS idx_forecast_notification_outbox_profile_state_available ON forecast_notification_outbox(profile_id, state, available_at, id)',
+    'CREATE INDEX IF NOT EXISTS idx_forecast_notification_outbox_state_lease ON forecast_notification_outbox(state, lease_expires_at)',
+    `CREATE TABLE IF NOT EXISTS forecast_notification_projection_items (
+      id TEXT PRIMARY KEY NOT NULL,
+      profile_id INTEGER NOT NULL,
+      projector_version TEXT NOT NULL,
+      evaluation_run_id INTEGER NOT NULL,
+      intent_id TEXT,
+      category TEXT CHECK (category IS NULL OR category IN ('target_hit', 'invalidated', 'expired', 'needs_review')),
+      dedup_key TEXT CHECK (dedup_key IS NULL OR length(dedup_key) = 64),
+      classification TEXT NOT NULL CHECK (classification IN ('intent_materialized', 'excluded_no_change', 'excluded_unsupported', 'invalid_source_needs_review')),
+      reason_code TEXT NOT NULL,
+      source_created_at TEXT NOT NULL,
+      warnings_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(warnings_json)),
+      processed_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      CHECK (
+        (classification = 'intent_materialized' AND intent_id IS NOT NULL AND category IS NOT NULL AND dedup_key IS NOT NULL)
+        OR (classification <> 'intent_materialized' AND intent_id IS NULL AND category IS NULL AND dedup_key IS NULL)
+      ),
+      FOREIGN KEY (profile_id, projector_version) REFERENCES forecast_notification_projection_checkpoints(profile_id, projector_version) ON DELETE CASCADE,
+      FOREIGN KEY (evaluation_run_id, profile_id) REFERENCES evaluation_runs(id, profile_id),
+      FOREIGN KEY (intent_id, profile_id) REFERENCES forecast_notification_intents(id, profile_id)
+    )`,
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_notification_projection_items_source ON forecast_notification_projection_items(profile_id, projector_version, evaluation_run_id)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_notification_projection_items_intent ON forecast_notification_projection_items(intent_id)',
+    'CREATE INDEX IF NOT EXISTS idx_forecast_notification_projection_items_profile_processed ON forecast_notification_projection_items(profile_id, processed_at, id)',
+    `CREATE TABLE IF NOT EXISTS forecast_notification_delivery_attempts (
+      id TEXT PRIMARY KEY NOT NULL,
+      outbox_id TEXT NOT NULL,
+      profile_id INTEGER NOT NULL,
+      attempt_number INTEGER NOT NULL CHECK (attempt_number > 0),
+      owner_token TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('started', 'succeeded', 'retry_scheduled', 'terminal_failure', 'interrupted')),
+      retry_policy_version TEXT NOT NULL,
+      adapter_kind TEXT NOT NULL,
+      adapter_version TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      failure_classification TEXT CHECK (failure_classification IS NULL OR failure_classification IN ('retryable', 'terminal', 'interrupted')),
+      redacted_error_category TEXT,
+      next_attempt_at TEXT,
+      created_at TEXT NOT NULL,
+      CHECK (
+        (state = 'started' AND finished_at IS NULL AND failure_classification IS NULL
+          AND redacted_error_category IS NULL AND next_attempt_at IS NULL)
+        OR (state = 'succeeded' AND finished_at IS NOT NULL AND failure_classification IS NULL
+          AND redacted_error_category IS NULL AND next_attempt_at IS NULL)
+        OR (state = 'retry_scheduled' AND finished_at IS NOT NULL AND failure_classification = 'retryable'
+          AND redacted_error_category IS NOT NULL AND next_attempt_at IS NOT NULL)
+        OR (state = 'terminal_failure' AND finished_at IS NOT NULL AND failure_classification IN ('retryable', 'terminal')
+          AND redacted_error_category IS NOT NULL AND next_attempt_at IS NULL)
+        OR (state = 'interrupted' AND finished_at IS NOT NULL AND failure_classification = 'interrupted'
+          AND redacted_error_category IS NOT NULL AND next_attempt_at IS NULL)
+      ),
+      FOREIGN KEY (outbox_id, profile_id) REFERENCES forecast_notification_outbox(id, profile_id) ON DELETE CASCADE
+    )`,
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_notification_attempts_outbox_number ON forecast_notification_delivery_attempts(outbox_id, attempt_number)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_notification_attempts_owner_token ON forecast_notification_delivery_attempts(owner_token)',
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_notification_attempts_started ON forecast_notification_delivery_attempts(outbox_id) WHERE state = 'started'",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_forecast_notification_attempts_succeeded ON forecast_notification_delivery_attempts(outbox_id) WHERE state = 'succeeded'",
+    'CREATE INDEX IF NOT EXISTS idx_forecast_notification_attempts_profile_created ON forecast_notification_delivery_attempts(profile_id, created_at, id)',
   ] as const;
 }
 

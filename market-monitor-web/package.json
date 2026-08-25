@@ -12,7 +12,9 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "test": "node --experimental-strip-types --test app/lib/*.test.ts",
     "db:generate": "drizzle-kit generate",
-    "forecast:coordinate": "node --experimental-strip-types scripts/run-forecast-coordinator.ts"
+    "forecast:coordinate": "node --experimental-strip-types scripts/run-forecast-coordinator.ts",
+    "forecast:schedule:simulate": "node --experimental-strip-types scripts/run-forecast-scheduler.ts",
+    "forecast:schedule:status": "node --experimental-strip-types scripts/run-forecast-scheduler-status.ts"
   },
   "dependencies": {
     "next": "16.2.6",

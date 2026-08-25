@@ -32,6 +32,15 @@ const NOTIFICATION_TABLES = [
   'forecast_notification_outbox',
   'forecast_notification_projection_items',
   'forecast_notification_delivery_attempts',
+  'forecast_email_recipients',
+  'forecast_email_consent_revisions',
+  'forecast_email_consents',
+  'forecast_email_capabilities',
+  'forecast_email_pre_send_decisions',
+  'forecast_email_deliveries',
+  'forecast_email_provider_attempts',
+  'forecast_email_provider_events',
+  'forecast_email_suppression_events',
 ] as const;
 
 class SQLitePrepared {
@@ -794,7 +803,7 @@ test('runtime DDL and generated migration agree for all notification tables', ()
   for (const migrationName of [
     '0000_spotty_sugar_man.sql', '0001_kind_warbound.sql', '0002_quiet_gamora.sql',
     '0003_great_xavin.sql', '0004_clean_next_avengers.sql', '0005_thin_ikaris.sql',
-    '0006_late_wasp.sql',
+    '0006_late_wasp.sql', '0007_late_amphibian.sql',
   ]) {
     const sql = readFileSync(new URL(`../../drizzle/${migrationName}`, import.meta.url), 'utf8');
     for (const statement of sql.split('--> statement-breakpoint').map((value) => value.trim()).filter(Boolean)) {

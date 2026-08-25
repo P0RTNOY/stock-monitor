@@ -88,8 +88,20 @@ function localAnalysisBridge(): Plugin {
 }
 
 const localBindingConfig = {
-  main: 'vinext/server/app-router-entry',
+  main: './worker/index.ts',
   compatibility_flags: ['nodejs_compat'],
+  triggers: { crons: ['30 6 * * *'] },
+  vars: {
+    FORECAST_SCHEDULER_ENABLED: 'false',
+    FORECAST_SCHEDULER_ENVIRONMENT: 'local',
+    FORECAST_SCHEDULER_PAGE_SIZE: '10',
+    FORECAST_SCHEDULER_MAX_PAGES: '3',
+    FORECAST_SCHEDULER_MAX_ITEMS: '25',
+    FORECAST_SCHEDULER_MAX_RUNTIME_MS: '480000',
+    FORECAST_SCHEDULER_MIN_REMAINING_MS: '45000',
+    FORECAST_SCHEDULER_VERSION: 'forecast-scheduler-1.0.0',
+    FORECAST_COORDINATOR_VERSION: 'forecast-coordinator-1.0.0',
+  },
   d1_databases: d1
     ? [
         {

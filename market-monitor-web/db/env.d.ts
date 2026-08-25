@@ -1,5 +1,15 @@
 declare namespace Cloudflare {
   interface Env {
     DB: D1Database;
+    FORECAST_SCHEDULER_ENABLED?: string;
+    FORECAST_SCHEDULER_ENVIRONMENT?: string;
+    FORECAST_SCHEDULER_PAGE_SIZE?: string;
+    FORECAST_SCHEDULER_MAX_PAGES?: string;
+    FORECAST_SCHEDULER_MAX_ITEMS?: string;
+    FORECAST_SCHEDULER_MAX_RUNTIME_MS?: string;
+    FORECAST_SCHEDULER_MIN_REMAINING_MS?: string;
+    FORECAST_SCHEDULER_VERSION?: string;
+    FORECAST_COORDINATOR_VERSION?: string;
+    ANALYSIS_API_URL?: string;
   }
 }

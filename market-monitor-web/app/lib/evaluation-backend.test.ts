@@ -185,6 +185,11 @@ test('Python evaluation adapter sends the frozen request no-store and rejects ma
   assert.equal(captured?.cache, 'no-store');
   assert.deepEqual(JSON.parse(String(captured?.body)), input);
 
+  await evaluateWithPython(input, (async (url) => {
+    assert.equal(String(url), 'https://analysis.example.test/internal/v1/evaluate');
+    return Response.json({ result: valid });
+  }) as typeof fetch, AbortSignal.timeout(1_000), 'https://analysis.example.test/internal');
+
   await assert.rejects(() => evaluateWithPython(input, (async () => Response.json({ result: { ...valid, forecast_id: 8 } })) as typeof fetch), EvaluationProviderError);
   await assert.rejects(() => evaluateWithPython(input, (async () => Response.json({ result: { ...valid, extra: true } })) as typeof fetch), /fields/);
   await assert.rejects(

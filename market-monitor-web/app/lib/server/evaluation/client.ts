@@ -322,8 +322,8 @@ export function normalizeEvaluationResult(value: unknown, request: EvaluationReq
   return result;
 }
 
-function evaluationServiceUrl() {
-  const configured = process.env.ANALYSIS_API_URL || 'http://127.0.0.1:8502';
+function evaluationServiceUrl(configuredValue?: string) {
+  const configured = configuredValue || process.env.ANALYSIS_API_URL || 'http://127.0.0.1:8502';
   const url = new URL(configured);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash || url.search) {
     throw new EvaluationProviderError('Invalid evaluation service URL.');
@@ -356,10 +356,11 @@ export async function evaluateWithPython(
   request: EvaluationRequest,
   fetcher: typeof fetch = fetch,
   timeoutSignal: AbortSignal = AbortSignal.timeout(30_000),
+  serviceBaseUrl?: string,
 ): Promise<EvaluationResult> {
   let response: Response;
   try {
-    response = await fetcher(evaluationServiceUrl(), {
+    response = await fetcher(evaluationServiceUrl(serviceBaseUrl), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify(request),

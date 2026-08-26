@@ -2,6 +2,7 @@ import { env } from 'cloudflare:workers';
 import { drizzle } from 'drizzle-orm/d1';
 import * as schema from './schema';
 import { forecastEventUpgradeStatements, forecastInitializationStatements } from './forecast-initialization.ts';
+import { inAppNotificationInitializationStatements } from './in-app-notification-initialization.ts';
 
 let readyPromise: Promise<void> | undefined;
 
@@ -79,6 +80,7 @@ async function initializeDatabase() {
     )`),
     d1.prepare('CREATE INDEX IF NOT EXISTS idx_alerts_profile_active ON review_alerts(profile_id, active)'),
     ...forecastInitializationStatements().map((statement) => d1.prepare(statement)),
+    ...inAppNotificationInitializationStatements().map((statement) => d1.prepare(statement)),
   ]);
 
   const eventTable = await d1.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'forecast_events'")

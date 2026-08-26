@@ -57,6 +57,13 @@
       "when": 1787675470124,
       "tag": "0007_late_amphibian",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1787752573296,
+      "tag": "0008_vengeful_the_watchers",
+      "breakpoints": true
     }
   ]
 }

@@ -839,6 +839,175 @@ export const forecastNotificationDeliveryAttempts = sqliteTable('forecast_notifi
   )`),
 ]);
 
+export const forecastInAppNotificationProjectionCheckpoints = sqliteTable('forecast_in_app_notification_projection_checkpoints', {
+  profileId: integer('profile_id').notNull().references(() => investmentProfiles.id, { onDelete: 'cascade' }),
+  projectorVersion: text('projector_version').notNull(),
+  baselineEvaluationRunId: integer('baseline_evaluation_run_id').notNull(),
+  baselineIntentId: text('baseline_intent_id').notNull(),
+  lastEvaluationRunId: integer('last_evaluation_run_id').notNull(),
+  lastIntentId: text('last_intent_id').notNull(),
+  activatedAt: text('activated_at').notNull(),
+  leaseToken: text('lease_token'),
+  leaseExpiresAt: text('lease_expires_at'),
+  recoveryCount: integer('recovery_count').notNull().default(0),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  primaryKey({
+    columns: [table.profileId, table.projectorVersion],
+    name: 'forecast_in_app_notification_projection_checkpoints_pk',
+  }),
+  index('idx_forecast_in_app_checkpoints_lease').on(table.leaseExpiresAt),
+  check('forecast_in_app_checkpoints_cursor_check', sql`${table.baselineEvaluationRunId} >= 0
+    AND ${table.lastEvaluationRunId} >= ${table.baselineEvaluationRunId}
+    AND (${table.baselineEvaluationRunId} > 0 OR ${table.baselineIntentId} = '')
+    AND (${table.lastEvaluationRunId} > 0 OR ${table.lastIntentId} = '')
+    AND (${table.lastEvaluationRunId} > ${table.baselineEvaluationRunId}
+      OR ${table.lastIntentId} >= ${table.baselineIntentId})`),
+  check('forecast_in_app_checkpoints_lease_check', sql`(
+    ${table.leaseToken} IS NULL AND ${table.leaseExpiresAt} IS NULL
+  ) OR (
+    ${table.leaseToken} IS NOT NULL AND ${table.leaseExpiresAt} IS NOT NULL
+  )`),
+  check('forecast_in_app_checkpoints_recovery_check', sql`${table.recoveryCount} >= 0`),
+]);
+
+export const forecastInAppNotificationEntries = sqliteTable('forecast_in_app_notification_entries', {
+  sequence: integer('sequence').primaryKey({ autoIncrement: true }),
+  id: text('id').notNull(),
+  profileId: integer('profile_id').notNull().references(() => investmentProfiles.id, { onDelete: 'cascade' }),
+  sourceIntentId: text('source_intent_id').notNull(),
+  forecastId: integer('forecast_id').notNull(),
+  evaluationRunId: integer('evaluation_run_id').notNull(),
+  reviewItemId: integer('review_item_id').notNull(),
+  analysisSnapshotId: integer('analysis_snapshot_id'),
+  category: text('category').notNull(),
+  symbol: text('symbol').notNull(),
+  occurredAt: text('occurred_at').notNull(),
+  presentationVersion: text('presentation_version').notNull(),
+  presentationJson: text('presentation_json').notNull(),
+  presentationFingerprint: text('presentation_fingerprint').notNull(),
+  deepLinkKind: text('deep_link_kind').notNull(),
+  state: text('state').notNull().default('unread'),
+  firstReadAt: text('first_read_at'),
+  stateUpdatedAt: text('state_updated_at').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_forecast_in_app_entries_id').on(table.id),
+  uniqueIndex('idx_forecast_in_app_entries_id_profile').on(table.id, table.profileId),
+  uniqueIndex('idx_forecast_in_app_entries_source').on(table.profileId, table.sourceIntentId),
+  index('idx_forecast_in_app_entries_list').on(table.profileId, table.occurredAt, table.id),
+  index('idx_forecast_in_app_entries_unread').on(table.profileId, table.state),
+  index('idx_forecast_in_app_entries_category_list').on(table.profileId, table.category, table.occurredAt, table.id),
+  index('idx_forecast_in_app_entries_high_water').on(table.profileId, table.sequence),
+  foreignKey({
+    columns: [table.sourceIntentId, table.profileId],
+    foreignColumns: [forecastNotificationIntents.id, forecastNotificationIntents.profileId],
+    name: 'forecast_in_app_entries_intent_profile_fk',
+  }),
+  foreignKey({
+    columns: [table.forecastId, table.profileId],
+    foreignColumns: [forecasts.id, forecasts.profileId],
+    name: 'forecast_in_app_entries_forecast_profile_fk',
+  }),
+  foreignKey({
+    columns: [table.evaluationRunId, table.profileId],
+    foreignColumns: [evaluationRuns.id, evaluationRuns.profileId],
+    name: 'forecast_in_app_entries_evaluation_profile_fk',
+  }),
+  foreignKey({
+    columns: [table.reviewItemId, table.profileId],
+    foreignColumns: [forecastReviewItems.id, forecastReviewItems.profileId],
+    name: 'forecast_in_app_entries_review_profile_fk',
+  }),
+  foreignKey({
+    columns: [table.analysisSnapshotId, table.profileId],
+    foreignColumns: [analysisSnapshots.id, analysisSnapshots.profileId],
+    name: 'forecast_in_app_entries_snapshot_profile_fk',
+  }),
+  check('forecast_in_app_entries_category_check', sql`${table.category} IN ('target_hit', 'invalidated', 'expired', 'needs_review')`),
+  check('forecast_in_app_entries_state_check', sql`${table.state} IN ('unread', 'read')`),
+  check('forecast_in_app_entries_read_check', sql`${table.state} = 'unread' OR ${table.firstReadAt} IS NOT NULL`),
+  check('forecast_in_app_entries_presentation_check', sql`json_valid(${table.presentationJson})
+    AND length(${table.presentationFingerprint}) = 64`),
+  check('forecast_in_app_entries_link_check', sql`${table.deepLinkKind} = 'notification_evidence'`),
+]);
+
+export const forecastInAppNotificationProjectionItems = sqliteTable('forecast_in_app_notification_projection_items', {
+  id: text('id').primaryKey(),
+  profileId: integer('profile_id').notNull(),
+  projectorVersion: text('projector_version').notNull(),
+  sourceIntentId: text('source_intent_id').notNull(),
+  evaluationRunId: integer('evaluation_run_id').notNull(),
+  entryId: text('entry_id'),
+  classification: text('classification').notNull(),
+  reasonCode: text('reason_code').notNull(),
+  sourceCreatedAt: text('source_created_at').notNull(),
+  processedAt: text('processed_at').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_forecast_in_app_projection_source').on(
+    table.profileId, table.projectorVersion, table.sourceIntentId,
+  ),
+  uniqueIndex('idx_forecast_in_app_projection_entry').on(table.entryId),
+  index('idx_forecast_in_app_projection_processed').on(table.profileId, table.processedAt, table.id),
+  foreignKey({
+    columns: [table.profileId, table.projectorVersion],
+    foreignColumns: [
+      forecastInAppNotificationProjectionCheckpoints.profileId,
+      forecastInAppNotificationProjectionCheckpoints.projectorVersion,
+    ],
+    name: 'forecast_in_app_projection_checkpoint_fk',
+  }).onDelete('cascade'),
+  foreignKey({
+    columns: [table.sourceIntentId, table.profileId],
+    foreignColumns: [forecastNotificationIntents.id, forecastNotificationIntents.profileId],
+    name: 'forecast_in_app_projection_intent_profile_fk',
+  }),
+  foreignKey({
+    columns: [table.entryId, table.profileId],
+    foreignColumns: [forecastInAppNotificationEntries.id, forecastInAppNotificationEntries.profileId],
+    name: 'forecast_in_app_projection_entry_profile_fk',
+  }),
+  check('forecast_in_app_projection_classification_check', sql`${table.classification} IN (
+    'materialized', 'duplicate', 'unsupported_source', 'malformed_source'
+  )`),
+  check('forecast_in_app_projection_entry_check', sql`(
+    ${table.classification} IN ('materialized', 'duplicate') AND ${table.entryId} IS NOT NULL
+  ) OR (
+    ${table.classification} IN ('unsupported_source', 'malformed_source') AND ${table.entryId} IS NULL
+  )`),
+]);
+
+export const forecastInAppNotificationStateEvents = sqliteTable('forecast_in_app_notification_state_events', {
+  id: text('id').primaryKey(),
+  profileId: integer('profile_id').notNull().references(() => investmentProfiles.id, { onDelete: 'cascade' }),
+  entryId: text('entry_id'),
+  eventKind: text('event_kind').notNull(),
+  highWaterSequence: integer('high_water_sequence'),
+  affectedCount: integer('affected_count').notNull(),
+  occurredAt: text('occurred_at').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  index('idx_forecast_in_app_state_events_profile_created').on(table.profileId, table.createdAt, table.id),
+  index('idx_forecast_in_app_state_events_entry').on(table.entryId, table.createdAt),
+  foreignKey({
+    columns: [table.entryId, table.profileId],
+    foreignColumns: [forecastInAppNotificationEntries.id, forecastInAppNotificationEntries.profileId],
+    name: 'forecast_in_app_state_events_entry_profile_fk',
+  }),
+  check('forecast_in_app_state_events_kind_check', sql`${table.eventKind} IN ('read', 'unread', 'mark_all_read')`),
+  check('forecast_in_app_state_events_count_check', sql`${table.affectedCount} > 0`),
+  check('forecast_in_app_state_events_shape_check', sql`(
+    ${table.eventKind} IN ('read', 'unread') AND ${table.entryId} IS NOT NULL
+      AND ${table.highWaterSequence} IS NULL AND ${table.affectedCount} = 1
+  ) OR (
+    ${table.eventKind} = 'mark_all_read' AND ${table.entryId} IS NULL
+      AND ${table.highWaterSequence} IS NOT NULL AND ${table.highWaterSequence} >= 0
+  )`),
+]);
+
 export const forecastEmailRecipients = sqliteTable('forecast_email_recipients', {
   id: text('id').primaryKey(),
   profileId: integer('profile_id').notNull().references(() => investmentProfiles.id, { onDelete: 'cascade' }),

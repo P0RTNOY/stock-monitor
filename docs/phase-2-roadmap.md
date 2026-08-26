@@ -95,14 +95,29 @@ Phase 2C2C implements the durable in-app Notification Center defined in [`foreca
 
 No remote migration, deployment, live email, Cron activation, recipient UI, public profile selection, or external channel was added. Browser notification reads do not initialize schema or call providers. The fixed profile remains unsuitable for public multi-user operation.
 
-## Phase 3A — exact next step
+## Phase 3A1 — complete
 
-Add authenticated identity, authorization, and tenant isolation before any public multi-user exposure, recipient-management UI, channel-preference UI, or production dispatcher scheduling. Phase 3A must replace the fixed-profile resolver with a verified session/tenant boundary and prove same-tenant ownership through forecast, evaluation, notification, email, webhook, and operator paths. Phase 3A has not started.
+Phase 3A1 implements the tenant authorization foundation documented in [`authz-tenancy-phase-3a1.md`](authz-tenancy-phase-3a1.md):
+
+- internal users, role-bearing profile memberships, and append-only membership evidence;
+- typed human, anonymous, scheduler, operator, Resend, verification, and unsubscribe principals;
+- a centralized deny-by-default action/role/capability policy;
+- explicit local-bootstrap development access and production-shaped deny-all behavior;
+- action-bound human and system service scopes, a frozen operator command/action map, and query-level repository ownership;
+- system/provider/capability boundaries independent of browser identity;
+- an additive guarded bootstrap migration plus route/table ownership manifests; and
+- read-only bootstrap, tenant-integrity, and route authorization audits.
+
+Phase 3A1 deliberately does not claim real authentication, sessions, account recovery, remote D1 behavior, deployed multi-tenancy, or production readiness.
+
+## Phase 3A2 — exact next step
+
+Add a real authentication provider, secure sessions, login/logout, authenticated bootstrap-owner claiming, account recovery, protected navigation, and removal of local bootstrap from every non-local environment. Preserve Phase 3A1 tenant ownership, principal/action policy, system/provider/capability separation, email-recipient non-identity rule, non-enumerating errors, and audit tooling. Do not add recipient-management or membership-management UI until the authenticated claim/session boundary is proven.
 
 ## Later sequence
 
 1. **Authentication and authorized production delivery**
-   - Complete Phase 3A identity/tenant isolation and the remaining remote-runtime/provider verification above.
+   - Complete Phase 3A2 authentication/session integration and the remaining remote-runtime/provider verification above.
    - Preserve bounded execution, replay safety, consent, redaction, and duplicate-delivery protection.
 
 2. **Accuracy and calibration analytics**

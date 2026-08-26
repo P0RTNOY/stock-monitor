@@ -25,7 +25,10 @@
     "forecast:email:consent": "node --experimental-strip-types scripts/run-forecast-email-consent.ts",
     "forecast:email:verification:send": "node --experimental-strip-types scripts/run-forecast-email-verification-send.ts",
     "forecast:email:dispatch": "node --experimental-strip-types scripts/run-forecast-email-dispatch.ts",
-    "forecast:email:status": "node --experimental-strip-types scripts/run-forecast-email-status.ts"
+    "forecast:email:status": "node --experimental-strip-types scripts/run-forecast-email-status.ts",
+    "auth:tenant-audit": "node --experimental-strip-types scripts/run-auth-tenant-audit.ts",
+    "auth:route-audit": "node --experimental-strip-types scripts/run-auth-route-audit.ts",
+    "auth:bootstrap:status": "node --experimental-strip-types scripts/run-auth-bootstrap-status.ts"
   },
   "dependencies": {
     "@js-temporal/polyfill": "0.5.1",

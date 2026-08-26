@@ -1,6 +1,9 @@
 declare namespace Cloudflare {
   interface Env {
     DB: D1Database;
+    NORTHSTAR_ENVIRONMENT?: string;
+    NORTHSTAR_AUTH_MODE?: string;
+    NORTHSTAR_SYSTEM_PROFILE_ID?: string;
     FORECAST_SCHEDULER_ENABLED?: string;
     FORECAST_SCHEDULER_ENVIRONMENT?: string;
     FORECAST_SCHEDULER_PAGE_SIZE?: string;

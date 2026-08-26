@@ -25,6 +25,64 @@ export const investmentProfiles = sqliteTable('investment_profiles', {
   createdAt: text('created_at').notNull(),
 });
 
+export const identityUsers = sqliteTable('identity_users', {
+  id: text('id').primaryKey(),
+  status: text('status').notNull().default('active'),
+  externalIdentityState: text('external_identity_state').notNull().default('bootstrap_pending'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  disabledAt: text('disabled_at'),
+}, (table) => [
+  check('identity_users_status_check', sql`${table.status} IN ('active', 'disabled')`),
+  check('identity_users_external_identity_state_check', sql`${table.externalIdentityState} IN ('bootstrap_pending', 'unlinked', 'linked')`),
+  check('identity_users_disabled_state_check', sql`(${table.status} = 'active' AND ${table.disabledAt} IS NULL) OR (${table.status} = 'disabled' AND ${table.disabledAt} IS NOT NULL)`),
+]);
+
+export const profileMemberships = sqliteTable('profile_memberships', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => identityUsers.id),
+  profileId: integer('profile_id').notNull().references(() => investmentProfiles.id, { onDelete: 'cascade' }),
+  role: text('role').notNull(),
+  status: text('status').notNull().default('active'),
+  revision: integer('revision').notNull().default(1),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  revokedAt: text('revoked_at'),
+}, (table) => [
+  uniqueIndex('idx_profile_memberships_user_profile').on(table.userId, table.profileId),
+  uniqueIndex('idx_profile_memberships_id_user_profile').on(table.id, table.userId, table.profileId),
+  index('idx_profile_memberships_profile_status').on(table.profileId, table.status, table.role),
+  check('profile_memberships_role_check', sql`${table.role} IN ('owner', 'editor', 'viewer')`),
+  check('profile_memberships_status_check', sql`${table.status} IN ('active', 'revoked')`),
+  check('profile_memberships_revision_check', sql`${table.revision} >= 1`),
+  check('profile_memberships_revocation_check', sql`(${table.status} = 'active' AND ${table.revokedAt} IS NULL) OR (${table.status} = 'revoked' AND ${table.revokedAt} IS NOT NULL)`),
+]);
+
+export const profileMembershipEvents = sqliteTable('profile_membership_events', {
+  id: text('id').primaryKey(),
+  membershipId: text('membership_id').notNull(),
+  userId: text('user_id').notNull(),
+  profileId: integer('profile_id').notNull(),
+  revision: integer('revision').notNull(),
+  eventType: text('event_type').notNull(),
+  role: text('role').notNull(),
+  status: text('status').notNull(),
+  actorKind: text('actor_kind').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_profile_membership_events_membership_revision').on(table.membershipId, table.revision),
+  index('idx_profile_membership_events_profile_created').on(table.profileId, table.createdAt, table.id),
+  foreignKey({
+    columns: [table.membershipId, table.userId, table.profileId],
+    foreignColumns: [profileMemberships.id, profileMemberships.userId, profileMemberships.profileId],
+  }).onDelete('cascade'),
+  check('profile_membership_events_revision_check', sql`${table.revision} >= 1`),
+  check('profile_membership_events_type_check', sql`${table.eventType} IN ('created', 'role_changed', 'revoked', 'restored')`),
+  check('profile_membership_events_role_check', sql`${table.role} IN ('owner', 'editor', 'viewer')`),
+  check('profile_membership_events_status_check', sql`${table.status} IN ('active', 'revoked')`),
+  check('profile_membership_events_actor_check', sql`${table.actorKind} IN ('bootstrap_migration', 'system_operator', 'future_identity_provider')`),
+]);
+
 export const positions = sqliteTable('positions', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   profileId: integer('profile_id').notNull().references(() => investmentProfiles.id, { onDelete: 'cascade' }),

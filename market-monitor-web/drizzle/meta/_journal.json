@@ -64,6 +64,13 @@
       "when": 1787752573296,
       "tag": "0008_vengeful_the_watchers",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1787763848592,
+      "tag": "0009_mysterious_maginty",
+      "breakpoints": true
     }
   ]
 }

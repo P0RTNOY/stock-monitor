@@ -3,6 +3,13 @@ import { drizzle } from 'drizzle-orm/d1';
 import * as schema from './schema';
 import { forecastEventUpgradeStatements, forecastInitializationStatements } from './forecast-initialization.ts';
 import { inAppNotificationInitializationStatements } from './in-app-notification-initialization.ts';
+import {
+  authorizationInitializationStatements,
+  authorizationIntegrityStatements,
+  assertAuthorizationInitializationReady,
+  ensureAuthorizationBootstrap,
+} from './authorization-initialization.ts';
+import { authConfigurationFromEnv, type AuthEnvironmentBindings } from '@/app/lib/server/auth/config.ts';
 
 let readyPromise: Promise<void> | undefined;
 
@@ -83,6 +90,12 @@ async function initializeDatabase() {
     ...inAppNotificationInitializationStatements().map((statement) => d1.prepare(statement)),
   ]);
 
+  await assertAuthorizationInitializationReady(d1);
+  await d1.batch([
+    ...authorizationInitializationStatements().map((statement) => d1.prepare(statement)),
+    ...authorizationIntegrityStatements().map((statement) => d1.prepare(statement)),
+  ]);
+
   const eventTable = await d1.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'forecast_events'")
     .first<{ sql: string }>();
   if (eventTable && !eventTable.sql.includes('evaluation_review_acknowledged')) {
@@ -148,12 +161,8 @@ async function initializeDatabase() {
     await d1.batch(cleanupStatements);
   }
 
-  const existingProfile = await d1.prepare('SELECT id FROM investment_profiles WHERE id = 1').first<{ id: number }>();
-  if (!existingProfile) {
-    const createdAt = new Date().toISOString();
-    await d1.prepare('INSERT INTO investment_profiles (id, name, base_currency, cash_balance, created_at) VALUES (1, ?, ?, 0, ?)')
-      .bind('My portfolio', 'USD', createdAt).run();
-  }
+  const authorization = authConfigurationFromEnv(env as unknown as AuthEnvironmentBindings);
+  if (authorization.mode === 'local_bootstrap') await ensureAuthorizationBootstrap(d1);
 
   await d1.prepare('PRAGMA optimize').run();
 }

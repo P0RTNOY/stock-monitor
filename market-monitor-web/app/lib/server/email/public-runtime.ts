@@ -1,6 +1,5 @@
 import { env } from 'cloudflare:workers';
 import { ensureDatabase, getD1 } from '@/db';
-import { resolveCurrentProfile } from '../profile.ts';
 import { decodeEmailCapabilitySecret, type EmailEnvironmentBindings } from './config.ts';
 import type { EmailPublicActionService } from './public-actions.ts';
 import { EmailRecipientService } from './recipient-service.ts';
@@ -13,13 +12,13 @@ const VERIFICATION_LIFETIME_MS = 24 * 60 * 60 * 1_000;
  * Public GET handlers deliberately never call this function.
  */
 export async function emailPublicActionService(request: Request): Promise<EmailPublicActionService> {
+  void request;
   const bindings = env as EmailEnvironmentBindings;
   if (!bindings.FORECAST_EMAIL_CAPABILITY_SECRET) {
     throw new Error('Email capability verification is unavailable.');
   }
   const capabilitySecret = decodeEmailCapabilitySecret(bindings.FORECAST_EMAIL_CAPABILITY_SECRET);
   await ensureDatabase();
-  const { profileId } = await resolveCurrentProfile(request);
   const recipientService = new EmailRecipientService({
     repository: new D1EmailRepository(getD1()),
     capabilitySecret,
@@ -33,7 +32,7 @@ export async function emailPublicActionService(request: Request): Promise<EmailP
     },
   });
   return {
-    confirmVerification: (token) => recipientService.confirmVerification(profileId, token),
-    unsubscribe: (token) => recipientService.unsubscribe(profileId, token),
+    confirmVerification: (token) => recipientService.confirmVerification(token),
+    unsubscribe: (token) => recipientService.unsubscribe(token),
   };
 }

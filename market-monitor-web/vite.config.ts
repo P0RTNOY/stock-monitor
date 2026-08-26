@@ -57,6 +57,18 @@ function localAnalysisBridge(): Plugin {
             positions?: Array<{ symbol?: string }>;
             watchlist?: Array<{ symbol?: string }>;
           };
+          if (workspaceResponse.status === 401) {
+            sendJson(401, { error: 'Authentication is required.', code: 'unauthenticated' });
+            return;
+          }
+          if (workspaceResponse.status === 403) {
+            sendJson(403, { error: 'This action is not permitted.', code: 'forbidden' });
+            return;
+          }
+          if (workspaceResponse.status === 503) {
+            sendJson(503, { error: 'Authorization is unavailable.', code: 'authorization_unavailable' });
+            return;
+          }
           const allowed = new Set([
             ...(workspace.positions ?? []).map((item) => item.symbol),
             ...(workspace.watchlist ?? []).map((item) => item.symbol),
@@ -87,11 +99,19 @@ function localAnalysisBridge(): Plugin {
   };
 }
 
-const localBindingConfig = {
+function bindingConfig(developmentServer: boolean) {
+  return {
   main: './worker/index.ts',
   compatibility_flags: ['nodejs_compat'],
   triggers: { crons: ['30 6 * * *'] },
   vars: {
+    NORTHSTAR_ENVIRONMENT: developmentServer
+      ? process.env.NORTHSTAR_ENVIRONMENT ?? 'production' : 'production',
+    NORTHSTAR_AUTH_MODE: developmentServer
+      ? process.env.NORTHSTAR_AUTH_MODE ?? 'deny_all' : 'deny_all',
+    ...(process.env.NORTHSTAR_SYSTEM_PROFILE_ID
+      ? { NORTHSTAR_SYSTEM_PROFILE_ID: process.env.NORTHSTAR_SYSTEM_PROFILE_ID }
+      : {}),
     FORECAST_SCHEDULER_ENABLED: 'false',
     FORECAST_SCHEDULER_ENVIRONMENT: 'local',
     FORECAST_SCHEDULER_PAGE_SIZE: '10',
@@ -125,9 +145,10 @@ const localBindingConfig = {
         },
       ]
     : [],
-};
+  };
+}
 
-export default defineConfig(async () => {
+export default defineConfig(async ({ command }) => {
   // Keep Wrangler and Miniflare state project-local. These are non-secret tool
   // settings; application environment belongs in ignored `.env*` files.
   process.env.WRANGLER_WRITE_LOGS ??= 'false';
@@ -139,6 +160,9 @@ export default defineConfig(async () => {
 
   return {
     css: { postcss: { plugins: [tailwindcss()] } },
+    // Operator tests import Wrangler-backed modules, but Wrangler is never an
+    // application runtime dependency and must not be browser-prebundled.
+    optimizeDeps: { exclude: ['wrangler', 'blake3-wasm'] },
     server: {
       ...(isCodexSeatbeltSandbox
         ? { watch: { useFsEvents: false, usePolling: true } }
@@ -150,7 +174,10 @@ export default defineConfig(async () => {
       sites(),
       cloudflare({
         viteEnvironment: { name: 'rsc', childEnvironments: ['ssr'] },
-        config: localBindingConfig,
+        config: bindingConfig(command === 'serve'),
+        ...(process.env.NORTHSTAR_COORDINATOR_PERSIST_PATH
+          ? { persistState: { path: process.env.NORTHSTAR_COORDINATOR_PERSIST_PATH } }
+          : {}),
       }),
     ],
   };

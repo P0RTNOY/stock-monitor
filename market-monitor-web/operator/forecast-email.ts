@@ -43,7 +43,19 @@ import {
   type EmailReconciliationState,
 } from '../app/lib/server/email/types.ts';
 import { NOTIFICATION_CATEGORIES, type NotificationCategory } from '../app/lib/server/notifications/types.ts';
-import { resolveCurrentProfile } from '../app/lib/server/profile.ts';
+import { trustedOperatorScope } from '../app/lib/server/auth/system.ts';
+import {
+  AuthorizedEmailConsentService,
+  AuthorizedEmailDispatcherService,
+  AuthorizedEmailRecipientService,
+  AuthorizedVerificationDeliveryService,
+} from '../app/lib/server/auth/system-services.ts';
+import {
+  exactActionScope,
+  profileIdFromScope,
+  type AuthorizedProfileScope,
+} from '../app/lib/server/auth/enforcement.ts';
+import type { AuthorizationAction } from '../app/lib/server/auth/types.ts';
 
 const CONFIG_PATH = fileURLToPath(new URL('./wrangler.operator.jsonc', import.meta.url));
 const DEFAULT_PERSIST_PATH = '.wrangler/state/v3';
@@ -623,23 +635,19 @@ async function initializeEmailDatabase(d1: D1Database, profileId: number) {
   ]);
   const profile = await d1.prepare('SELECT id FROM investment_profiles WHERE id = ?')
     .bind(profileId).first<{ id: number }>();
-  if (!profile) {
-    await d1.prepare(`INSERT INTO investment_profiles
-      (id, name, base_currency, cash_balance, created_at) VALUES (?, ?, 'USD', 0, ?)`).bind(
-      profileId,
-      'My portfolio',
-      new Date().toISOString(),
-    ).run();
-  }
+  if (!profile) throw new Error('ConfiguredOperatorProfileUnavailable');
 }
 
 type Platform = Awaited<ReturnType<typeof getPlatformProxy<{ DB: D1Database }>>>;
 
-async function withEmailPlatform<T>(
+async function withEmailPlatform<T, A extends AuthorizationAction>(
   initialize: boolean,
+  authorizationAction: A,
+  command: string,
   operation: (input: {
     d1: D1Database;
     profileId: number;
+    scope: AuthorizedProfileScope<A>;
     configuration: EmailConfiguration;
     uuid: () => string;
   }) => Promise<T>,
@@ -648,11 +656,13 @@ async function withEmailPlatform<T>(
   try {
     const d1 = platform.env.DB;
     if (!d1) throw new Error('MissingLocalD1Binding');
-    const { profileId } = await resolveCurrentProfile();
+    const scope = trustedOperatorScope(process.env, authorizationAction, command);
+    const profileId = profileIdFromScope(scope, authorizationAction);
     if (initialize) await initializeEmailDatabase(d1, profileId);
     return await operation({
       d1,
       profileId,
+      scope,
       configuration: operatorEmailConfiguration(),
       uuid: randomUUID,
     });
@@ -722,8 +732,14 @@ export async function invokeRecipientOperator(
   if (options.help || !options.action) {
     throw new ForecastEmailOperatorUsageError('A runnable recipient action is required.');
   }
-  return withEmailPlatform(options.action !== 'status', async ({
-    d1, profileId, configuration, uuid,
+  return withEmailPlatform(
+    options.action !== 'status',
+    options.action === 'status' ? 'operator_status_inspect' : 'email_recipient_administer',
+    options.action === 'status'
+      ? 'forecast:email:recipient:status'
+      : 'forecast:email:recipient:administer',
+    async ({
+    d1, profileId, scope, configuration, uuid,
   }) => {
     const repository = new D1EmailRepository(d1);
     if (options.action === 'status') {
@@ -738,17 +754,20 @@ export async function invokeRecipientOperator(
         verification: null,
       };
     }
-    const service = recipientService(repository, configuration, uuid);
+    const service = new AuthorizedEmailRecipientService(
+      exactActionScope(scope, 'email_recipient_administer'),
+      recipientService(repository, configuration, uuid),
+    );
     if (options.action === 'set') {
       if (!options.email) throw new ForecastEmailOperatorUsageError('--set requires an email address.');
-      const recipient = await service.register(profileId, options.email);
+      const recipient = await service.register(options.email);
       return {
         action: 'set', disposition: 'recipient_pending',
         recipient: visibleRecipient(recipient), verification: null,
       };
     }
     if (options.action === 'revoke') {
-      const recipient = await service.revoke(profileId);
+      const recipient = await service.revoke();
       return {
         action: 'revoke',
         disposition: recipient ? 'recipient_revoked' : 'recipient_missing',
@@ -756,7 +775,7 @@ export async function invokeRecipientOperator(
         verification: null,
       };
     }
-    const requested = await service.requestVerification(profileId);
+    const requested = await service.requestVerification();
     // The plaintext capability exists only inside this trusted process and is
     // deliberately discarded rather than logged or returned by the operator.
     void requested.verificationToken;
@@ -766,7 +785,8 @@ export async function invokeRecipientOperator(
       recipient: visibleRecipient(requested.recipient),
       verification: { state: 'prepared', expiresAt: requested.expiresAt },
     };
-  });
+    },
+  );
 }
 
 export async function invokeConsentOperator(
@@ -776,8 +796,14 @@ export async function invokeConsentOperator(
     throw new ForecastEmailOperatorUsageError('A runnable email consent action is required.');
   }
   const action = options.action;
-  return withEmailPlatform(action !== 'status', async ({
-    d1, profileId, configuration, uuid,
+  return withEmailPlatform(
+    action !== 'status',
+    action === 'status' ? 'operator_status_inspect' : 'email_consent_administer',
+    action === 'status'
+      ? 'forecast:email:consent:status'
+      : 'forecast:email:consent:administer',
+    async ({
+    d1, profileId, scope, configuration, uuid,
   }) => {
     const repository = new D1EmailRepository(d1);
     if (action === 'status') {
@@ -794,10 +820,13 @@ export async function invokeConsentOperator(
         consent: visibleConsent(state.currentConsent),
       };
     }
-    const service = recipientService(repository, configuration, uuid);
+    const service = new AuthorizedEmailConsentService(
+      exactActionScope(scope, 'email_consent_administer'),
+      recipientService(repository, configuration, uuid),
+    );
     const consent = action === 'enable'
-      ? await service.enableConsent(profileId, options.categories)
-      : await service.disableConsent(profileId);
+      ? await service.enable(options.categories)
+      : await service.disable();
     const state = await repository.readRecipientState(profileId);
     return {
       action,
@@ -807,7 +836,8 @@ export async function invokeConsentOperator(
       recipient: visibleConsentRecipient(state),
       consent: visibleConsent(consent),
     };
-  });
+    },
+  );
 }
 
 export async function invokeVerificationSendOperator(
@@ -816,8 +846,8 @@ export async function invokeVerificationSendOperator(
   if (options.help || !options.cutoff) {
     throw new ForecastEmailOperatorUsageError('A runnable verification delivery is required.');
   }
-  return withEmailPlatform(options.mode === 'send_live', async ({
-    d1, profileId, configuration, uuid,
+  return withEmailPlatform(options.mode === 'send_live', 'email_dispatch', 'forecast:email:verification:send', async ({
+    d1, profileId, scope, configuration, uuid,
   }) => {
     const repository = new D1EmailRepository(d1);
     if (!await repository.hasSchema()) throw new Error('ForecastEmailSchemaMissing');
@@ -843,8 +873,7 @@ export async function invokeVerificationSendOperator(
         id: (kind) => `${kind}-${uuid()}`,
       },
     );
-    const delivery = await service.send({
-      profileId,
+    const delivery = await new AuthorizedVerificationDeliveryService(scope, service).send({
       sendLive: options.mode === 'send_live',
     });
     const state = await repository.readRecipientState(profileId);
@@ -867,7 +896,7 @@ export async function invokeDispatchOperator(options: DispatchOperatorOptions): 
   if (options.help || !options.cutoff) {
     throw new ForecastEmailOperatorUsageError('A runnable forecast email dispatch is required.');
   }
-  return withEmailPlatform(options.mode === 'send_live', async ({ d1, profileId, configuration, uuid }) => {
+  return withEmailPlatform(options.mode === 'send_live', 'email_dispatch', 'forecast:email:dispatch', async ({ d1, scope, configuration, uuid }) => {
     const repository = new D1EmailRepository(d1);
     if (!await repository.hasSchema()) {
       throw new Error('ForecastEmailSchemaMissing');
@@ -893,8 +922,7 @@ export async function invokeDispatchOperator(options: DispatchOperatorOptions): 
       id: (kind) => `${kind}-${uuid()}`,
     });
     const effectiveLimit = resolveDispatchLimit(options, configuration);
-    const report = await service.dispatch({
-      profileId,
+    const report = await new AuthorizedEmailDispatcherService(scope, service).dispatch({
       cutoff: options.cutoff as string,
       limit: effectiveLimit,
       sendLive: options.mode === 'send_live',
@@ -946,7 +974,7 @@ export async function inspectEmailStatus(options: EmailStatusOperatorOptions): P
   if (options.help) {
     throw new ForecastEmailOperatorUsageError('A runnable email status inspection is required.');
   }
-  return withEmailPlatform(false, async ({ d1, profileId, configuration }) => {
+  return withEmailPlatform(false, 'operator_status_inspect', 'forecast:email:status', async ({ d1, profileId, configuration }) => {
     const repository = new D1EmailRepository(d1);
     const filters = {
       limit: options.limit,

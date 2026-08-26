@@ -6,7 +6,9 @@ import {
   forecastInitializationStatements,
 } from '../db/forecast-initialization.ts';
 import { isCanonicalUtcInstant } from '../app/lib/server/coordinator/contract.ts';
-import { resolveCurrentProfile } from '../app/lib/server/profile.ts';
+import { trustedOperatorScope } from '../app/lib/server/auth/system.ts';
+import { AuthorizedSchedulerService } from '../app/lib/server/auth/system-services.ts';
+import { profileIdFromScope } from '../app/lib/server/auth/enforcement.ts';
 import {
   SCHEDULER_VERSION,
   SchedulerConfigurationError,
@@ -200,7 +202,8 @@ export async function invokeSchedulerSimulation(options: SchedulerSimulationOpti
     throw new SchedulerOperatorUsageError('A runnable scheduler simulation is required.');
   }
   const config = parseSchedulerConfig(options.rawConfig);
-  const { profileId } = await resolveCurrentProfile();
+  const scope = trustedOperatorScope(process.env, 'scheduler_coordinate', 'forecast:schedule:simulate');
+  const profileId = profileIdFromScope(scope, 'scheduler_coordinate');
   if (!config.enabled) {
     return disabledScheduledInvocation({
       config, profileId, scheduledTime: options.scheduledAt, scheduleExpression: options.cron,
@@ -216,14 +219,11 @@ export async function invokeSchedulerSimulation(options: SchedulerSimulationOpti
     await initializeSimulationDatabase(d1);
     const existing = await d1.prepare('SELECT id FROM investment_profiles WHERE id = ?')
       .bind(profileId).first<{ id: number }>();
-    if (!existing) {
-      await d1.prepare(`INSERT INTO investment_profiles
-        (id, name, base_currency, cash_balance, created_at) VALUES (?, ?, 'USD', 0, ?)`)
-        .bind(profileId, 'My portfolio', new Date().toISOString()).run();
-    }
-    return await createForecastScheduler({ d1, analysisApiUrl, uuid: randomUUID, logger: quietLogger() }).run({
-      config, profileId, scheduledTime: options.scheduledAt, scheduleExpression: options.cron,
-    });
+    if (!existing) throw new Error('ConfiguredOperatorProfileUnavailable');
+    return await new AuthorizedSchedulerService(
+      scope,
+      createForecastScheduler({ d1, analysisApiUrl, uuid: randomUUID, logger: quietLogger() }),
+    ).run({ config, scheduledTime: options.scheduledAt, scheduleExpression: options.cron });
   } finally {
     await platform.dispose();
   }
@@ -231,7 +231,6 @@ export async function invokeSchedulerSimulation(options: SchedulerSimulationOpti
 
 export type SchedulerStatusReport = {
   state: 'inspection_ready' | 'configuration_error';
-  profileId: number;
   localSchema: 'present' | 'missing';
   remoteMigrationState: 'unknown';
   remoteCronState: 'unknown';
@@ -264,7 +263,8 @@ function safeCoordinatorRunIds(value: string) {
 
 export async function inspectSchedulerStatus(options: SchedulerStatusOptions): Promise<SchedulerStatusReport> {
   if (options.help) throw new SchedulerOperatorUsageError('A runnable status inspection is required.');
-  const { profileId } = await resolveCurrentProfile();
+  const scope = trustedOperatorScope(process.env, 'operator_status_inspect', 'forecast:schedule:status');
+  const profileId = profileIdFromScope(scope, 'operator_status_inspect');
   const platform = await getPlatformProxy<{ DB: D1Database }>(platformOptions());
   try {
     const d1 = platform.env.DB;
@@ -273,7 +273,7 @@ export async function inspectSchedulerStatus(options: SchedulerStatusOptions): P
       WHERE type = 'table' AND name = 'forecast_scheduler_invocations'`).first<{ name: string }>();
     if (!table) {
       return {
-        state: 'configuration_error', profileId, localSchema: 'missing',
+        state: 'configuration_error', localSchema: 'missing',
         remoteMigrationState: 'unknown', remoteCronState: 'unknown', invocations: [],
       };
     }
@@ -305,7 +305,7 @@ export async function inspectSchedulerStatus(options: SchedulerStatusOptions): P
       };
     }));
     return {
-      state: 'inspection_ready', profileId, localSchema: 'present', remoteMigrationState: 'unknown',
+      state: 'inspection_ready', localSchema: 'present', remoteMigrationState: 'unknown',
       remoteCronState: 'unknown', invocations,
     };
   } finally {
@@ -343,7 +343,7 @@ export function renderSimulationHuman(report: ScheduledInvocationReport) {
 export function renderStatusHuman(report: SchedulerStatusReport) {
   const lines = [
     'Northstar scheduler status (local, read-only)',
-    `Inspection: ${report.state} | schema=${report.localSchema} | profile=${report.profileId}`,
+    `Inspection: ${report.state} | schema=${report.localSchema}`,
     `Remote migration: ${report.remoteMigrationState} | remote cron: ${report.remoteCronState}`,
   ];
   if (!report.invocations.length) lines.push('Invocations: none');

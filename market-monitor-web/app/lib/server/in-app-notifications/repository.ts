@@ -420,8 +420,9 @@ export class D1InAppNotificationRepository {
         SET state = ?, first_read_at = CASE WHEN ? = 'read' THEN COALESCE(first_read_at, ?) ELSE first_read_at END,
           state_updated_at = ?, updated_at = ?
         WHERE profile_id = ? AND id = ? AND EXISTS (
-          SELECT 1 FROM forecast_in_app_notification_state_events WHERE id = ?
-        )`).bind(state, state, now, now, now, profileId, id, eventId),
+          SELECT 1 FROM forecast_in_app_notification_state_events
+          WHERE id = ? AND profile_id = ? AND entry_id = ?
+        )`).bind(state, state, now, now, now, profileId, id, eventId, profileId, id),
     ]);
     const exists = await this.d1.prepare(`SELECT id FROM forecast_in_app_notification_entries
       WHERE profile_id = ? AND id = ?`).bind(profileId, id).first<{ id: string }>();
@@ -440,8 +441,9 @@ export class D1InAppNotificationRepository {
         SET state = 'read', first_read_at = COALESCE(first_read_at, ?),
           state_updated_at = ?, updated_at = ?
         WHERE profile_id = ? AND sequence <= ? AND state = 'unread'
-          AND EXISTS (SELECT 1 FROM forecast_in_app_notification_state_events WHERE id = ?)`)
-        .bind(now, now, now, profileId, highWaterSequence, eventId),
+          AND EXISTS (SELECT 1 FROM forecast_in_app_notification_state_events
+            WHERE id = ? AND profile_id = ? AND event_kind = 'mark_all_read')`)
+        .bind(now, now, now, profileId, highWaterSequence, eventId, profileId),
     ]);
     return changes(result[1]);
   }

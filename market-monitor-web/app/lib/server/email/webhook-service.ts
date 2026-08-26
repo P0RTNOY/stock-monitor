@@ -3,6 +3,8 @@ import type {
   EmailWebhookRepository,
   ResendWebhookPersistenceResult,
 } from './webhook-repository.ts';
+import { authorize } from '../auth/policy.ts';
+import type { ResendProviderPrincipal } from '../auth/types.ts';
 
 export type SafeWebhookLogger = {
   log(event: {
@@ -39,7 +41,13 @@ export class ResendWebhookService {
     this.logger = logger;
   }
 
-  async process(input: ResendWebhookServiceInput): Promise<ResendWebhookServiceResult> {
+  async process(
+    principal: ResendProviderPrincipal,
+    input: ResendWebhookServiceInput,
+  ): Promise<ResendWebhookServiceResult> {
+    if (!authorize(principal, 'resend_webhook_reconcile', {
+      providerEventId: input.webhookId,
+    }).allowed) throw new Error('ResendProviderAuthorizationDenied');
     const event = parseResendWebhookEvent(input.verifiedPayload);
     // Open/click and all other non-reconciliation events are deliberately not
     // tracked. A bounded, PII-free classification is enough to acknowledge a

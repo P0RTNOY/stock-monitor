@@ -24,6 +24,11 @@ import {
   type EmailConsentSnapshot,
   type EmailRecipient,
 } from './types.ts';
+import { authorize } from '../auth/policy.ts';
+import type {
+  UnsubscribeCapabilityPrincipal,
+  VerificationCapabilityPrincipal,
+} from '../auth/types.ts';
 
 export const EMAIL_PUBLIC_CAPABILITY_MAX_ATTEMPTS = 5;
 
@@ -78,8 +83,7 @@ export interface EmailRecipientRepository {
     requestedAt: string;
     capability: StoredEmailCapability;
   }): Promise<boolean>;
-  loadCapabilityForAttempt(input: {
-    profileId: number;
+  loadCapabilityForAttemptByLocator(input: {
     capabilityId: string;
     purpose: 'verification' | 'unsubscribe';
     attemptedAt: string;
@@ -314,13 +318,11 @@ export class EmailRecipientService {
     };
   }
 
-  async confirmVerification(profileId: number, token: unknown) {
-    const trusted = trustedProfileId(profileId);
+  async confirmVerification(token: unknown) {
     const capabilityId = emailCapabilityLocator(token);
     if (!capabilityId) return false;
     const now = instant(this.runtime.now(), 'Verification confirmation time');
-    const capability = await this.repository.loadCapabilityForAttempt({
-      profileId: trusted,
+    const capability = await this.repository.loadCapabilityForAttemptByLocator({
       capabilityId,
       purpose: 'verification',
       attemptedAt: now,
@@ -334,8 +336,22 @@ export class EmailRecipientService {
       now,
     }, this.capabilitySecret, this.capabilityPrimitives);
     if (!verification.valid || verification.recipientId !== capability.recipientId) return false;
+    if (!capability.expiresAt) return false;
+    const principal: VerificationCapabilityPrincipal = {
+      kind: 'capability_email_verification',
+      profileId: capability.profileId,
+      capabilityId: capability.id,
+      recipientId: capability.recipientId,
+      expiresAt: capability.expiresAt,
+    };
+    if (!authorize(principal, 'email_verification_consume', {
+      profileId: capability.profileId,
+      capabilityId: capability.id,
+      recipientId: capability.recipientId,
+      now,
+    }).allowed) return false;
     return this.repository.consumeVerification({
-      profileId: trusted,
+      profileId: capability.profileId,
       recipientId: capability.recipientId,
       capabilityId: capability.id,
       tokenHash: capability.tokenHash,
@@ -422,13 +438,11 @@ export class EmailRecipientService {
     return consent;
   }
 
-  async unsubscribe(profileId: number, token: unknown) {
-    const trusted = trustedProfileId(profileId);
+  async unsubscribe(token: unknown) {
     const capabilityId = emailCapabilityLocator(token);
     if (!capabilityId) return false;
     const now = instant(this.runtime.now(), 'Unsubscribe time');
-    const capability = await this.repository.loadCapabilityForAttempt({
-      profileId: trusted,
+    const capability = await this.repository.loadCapabilityForAttemptByLocator({
       capabilityId,
       purpose: 'unsubscribe',
       attemptedAt: now,
@@ -439,14 +453,27 @@ export class EmailRecipientService {
       token, expectedPurpose: 'unsubscribe', record: capability, now,
     }, this.capabilitySecret, this.capabilityPrimitives);
     if (!verification.valid) return false;
-    const state = await this.repository.readRecipientState(trusted);
+    const principal: UnsubscribeCapabilityPrincipal = {
+      kind: 'capability_email_unsubscribe',
+      profileId: capability.profileId,
+      capabilityId: capability.id,
+      recipientId: capability.recipientId,
+      consentRevision: capability.consentRevision,
+    };
+    if (!authorize(principal, 'email_unsubscribe_consume', {
+      profileId: capability.profileId,
+      capabilityId: capability.id,
+      recipientId: capability.recipientId,
+      consentRevision: capability.consentRevision,
+    }).allowed) return false;
+    const state = await this.repository.readRecipientState(capability.profileId);
     if (state.currentRecipient?.id !== capability.recipientId
       || state.currentConsent?.revision !== capability.consentRevision) return false;
     const consent = disabledConsent(
-      state, trusted, state.currentRecipient, now, 'unsubscribe',
+      state, capability.profileId, state.currentRecipient, now, 'unsubscribe',
     );
     return this.repository.consumeUnsubscribe({
-      profileId: trusted,
+      profileId: capability.profileId,
       expectedRecipientId: capability.recipientId,
       capabilityId: capability.id,
       tokenHash: capability.tokenHash,

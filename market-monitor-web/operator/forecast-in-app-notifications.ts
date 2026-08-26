@@ -12,7 +12,9 @@ import {
   InAppNotificationService,
   type InAppProjectionReport,
 } from '../app/lib/server/in-app-notifications/service.ts';
-import { resolveCurrentProfile } from '../app/lib/server/profile.ts';
+import { trustedOperatorScope } from '../app/lib/server/auth/system.ts';
+import { AuthorizedInAppProjectorService } from '../app/lib/server/auth/system-services.ts';
+import { profileIdFromScope } from '../app/lib/server/auth/enforcement.ts';
 
 const CONFIG_PATH = fileURLToPath(new URL('./wrangler.operator.jsonc', import.meta.url));
 const DEFAULT_PERSIST_PATH = '.wrangler/state/v3';
@@ -157,9 +159,9 @@ function service(repository: D1InAppNotificationRepository) {
 async function maybeInitialize(d1: D1Database, commit: boolean, profileId: number) {
   if (!commit) return;
   await d1.batch(inAppNotificationInitializationStatements().map((statement) => d1.prepare(statement)));
-  await d1.prepare(`INSERT OR IGNORE INTO investment_profiles
-    (id, name, base_currency, cash_balance, created_at) VALUES (?, 'My portfolio', 'USD', 0, ?)`)
-    .bind(profileId, new Date().toISOString()).run();
+  const profile = await d1.prepare('SELECT id FROM investment_profiles WHERE id = ?')
+    .bind(profileId).first();
+  if (!profile) throw new Error('ConfiguredOperatorProfileUnavailable');
 }
 
 export async function invokeInAppProject(options: InAppProjectOptions) {
@@ -168,9 +170,13 @@ export async function invokeInAppProject(options: InAppProjectOptions) {
   try {
     const d1 = platform.env.DB;
     if (!d1) throw new Error('MissingLocalD1Binding');
-    const { profileId } = await resolveCurrentProfile();
+    const scope = trustedOperatorScope(process.env, 'notification_projection', 'forecast:notifications:in-app:project');
+    const profileId = profileIdFromScope(scope, 'notification_projection');
     await maybeInitialize(d1, options.mode === 'commit', profileId);
-    return await service(new D1InAppNotificationRepository(d1)).project({ profileId, cutoff: options.cutoff, limit: options.limit, mode: options.mode }, profileId);
+    return await new AuthorizedInAppProjectorService(
+      scope,
+      service(new D1InAppNotificationRepository(d1)),
+    ).project({ cutoff: options.cutoff, limit: options.limit, mode: options.mode });
   } finally { await platform.dispose(); }
 }
 
@@ -182,13 +188,17 @@ export async function invokeInAppBackfill(options: InAppBackfillOptions) {
   try {
     const d1 = platform.env.DB;
     if (!d1) throw new Error('MissingLocalD1Binding');
-    const { profileId } = await resolveCurrentProfile();
+    const scope = trustedOperatorScope(process.env, 'notification_projection', 'forecast:notifications:in-app:backfill');
+    const profileId = profileIdFromScope(scope, 'notification_projection');
     await maybeInitialize(d1, options.mode === 'commit', profileId);
-    return await service(new D1InAppNotificationRepository(d1)).backfill({
-      profileId, cutoff: options.cutoff, limit: options.limit, mode: options.mode,
+    return await new AuthorizedInAppProjectorService(
+      scope,
+      service(new D1InAppNotificationRepository(d1)),
+    ).backfill({
+      cutoff: options.cutoff, limit: options.limit, mode: options.mode,
       fromEvaluationRunId: options.fromEvaluationRunId,
       throughEvaluationRunId: options.throughEvaluationRunId,
-    }, profileId);
+    });
   } finally { await platform.dispose(); }
 }
 
@@ -197,7 +207,8 @@ export async function inspectInAppStatus() {
   try {
     const d1 = platform.env.DB;
     if (!d1) throw new Error('MissingLocalD1Binding');
-    const { profileId } = await resolveCurrentProfile();
+    const scope = trustedOperatorScope(process.env, 'operator_status_inspect', 'forecast:notifications:in-app:status');
+    const profileId = profileIdFromScope(scope, 'operator_status_inspect');
     const repository = new D1InAppNotificationRepository(d1);
     if (!await repository.hasSchema()) return {
       state: 'configuration_error', localSchema: 'missing', remoteMigrationState: 'unknown',

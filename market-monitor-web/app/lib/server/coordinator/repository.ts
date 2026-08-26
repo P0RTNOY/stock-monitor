@@ -380,7 +380,7 @@ export class D1CoordinatorRepository {
         (id, item_id, run_id, profile_id, attempt_number, owner_token, state, started_at, created_at)
         SELECT ?, ?, ?, ?,
           COALESCE((SELECT MAX(attempt_number) FROM forecast_coordinator_item_attempts
-            WHERE item_id = ?), 0) + 1,
+            WHERE item_id = ? AND run_id = ? AND profile_id = ?), 0) + 1,
           ?, 'started', ?, ?
         WHERE EXISTS (SELECT 1 FROM forecast_coordinator_claims c
           WHERE c.profile_id = ? AND c.owner_run_id = ? AND c.owner_item_id = ?
@@ -389,7 +389,7 @@ export class D1CoordinatorRepository {
             WHERE r.id = ? AND r.profile_id = ? AND r.lease_token = ? AND r.status = 'running'
               AND r.lease_expires_at > ?)`)
         .bind(
-          input.id, input.itemId, input.runId, input.profileId, input.itemId,
+          input.id, input.itemId, input.runId, input.profileId, input.itemId, input.runId, input.profileId,
           input.ownerToken, input.startedAt, input.startedAt,
           input.profileId, input.runId, input.itemId, input.ownerToken, input.startedAt,
           input.runId, input.profileId, input.runLeaseToken, input.startedAt,
@@ -595,7 +595,8 @@ export class D1CoordinatorRepository {
       WHERE id = ? AND profile_id = ? AND lease_token = ? AND status = 'running'
         AND lease_expires_at > ?
         AND NOT EXISTS (SELECT 1 FROM forecast_coordinator_run_items
-          WHERE run_id = forecast_coordinator_runs.id AND state <> 'completed')`)
+          WHERE run_id = forecast_coordinator_runs.id
+            AND profile_id = forecast_coordinator_runs.profile_id AND state <> 'completed')`)
       .bind(
         status, input.completedAt, input.durationMs, input.nextCursor, input.nextCursor,
         rows.length, attempted, mutated, unexpected, JSON.stringify(outcomeCounts), input.completedAt,

@@ -1,5 +1,8 @@
 import { getD1 } from '@/db';
-import { resolveCurrentProfile } from '../profile.ts';
+import { authorizeHumanRequest } from '../auth/runtime-resolver.ts';
+import { authorizationErrorResponse } from '../auth/http.ts';
+import type { AuthorizationAction } from '../auth/types.ts';
+import { profileIdFromScope, type AuthorizedProfileScope } from '../auth/enforcement.ts';
 import {
   InAppNotificationError,
   parseEmptyBody,
@@ -12,6 +15,29 @@ import { InAppNotificationService } from './service.ts';
 
 const MAX_MUTATION_BYTES = 1_024;
 
+class AuthorizedInAppNotificationService {
+  constructor(
+    private readonly scope: AuthorizedProfileScope,
+    private readonly service: InAppNotificationService,
+  ) {}
+
+  list(input: ReturnType<typeof parseListQuery>) {
+    return this.service.list(profileIdFromScope(this.scope, 'in_app_notification_list'), input);
+  }
+  unreadCount() {
+    return this.service.unreadCount(profileIdFromScope(this.scope, 'in_app_notification_list'));
+  }
+  detail(id: string) {
+    return this.service.detail(profileIdFromScope(this.scope, 'in_app_notification_read'), id);
+  }
+  setState(id: string, state: 'read' | 'unread') {
+    return this.service.setState(profileIdFromScope(this.scope, 'in_app_notification_state_update'), id, state);
+  }
+  markAllRead(token: string) {
+    return this.service.markAllRead(profileIdFromScope(this.scope, 'in_app_notification_state_update'), token);
+  }
+}
+
 function runtime() {
   return {
     now: () => new Date().toISOString(),
@@ -19,11 +45,14 @@ function runtime() {
   };
 }
 
-export async function inAppRequestContext(request: Request) {
-  const { profileId } = await resolveCurrentProfile(request);
+export async function inAppRequestContext(request: Request, action: AuthorizationAction) {
+  const scope = await authorizeHumanRequest(request, action);
   return {
-    profileId,
-    service: new InAppNotificationService(new D1InAppNotificationRepository(getD1()), runtime()),
+    scope,
+    service: new AuthorizedInAppNotificationService(
+      scope,
+      new InAppNotificationService(new D1InAppNotificationRepository(getD1()), runtime()),
+    ),
   };
 }
 
@@ -35,6 +64,8 @@ export function inAppJson(value: unknown, init: ResponseInit = {}) {
 }
 
 export function inAppErrorResponse(error: unknown, operation: string) {
+  const authorizationResponse = authorizationErrorResponse(error);
+  if (authorizationResponse) return authorizationResponse;
   if (error instanceof InAppNotificationError) {
     return inAppJson({ error: error.message, code: error.code }, { status: error.status });
   }
@@ -69,35 +100,35 @@ export async function smallJson(request: Request) {
 }
 
 export async function handleList(request: Request) {
+  const { service } = await inAppRequestContext(request, 'in_app_notification_list');
   const input = parseListQuery(new URL(request.url));
-  const { profileId, service } = await inAppRequestContext(request);
-  return inAppJson(await service.list(profileId, input));
+  return inAppJson(await service.list(input));
 }
 
 export async function handleCount(request: Request) {
+  const { service } = await inAppRequestContext(request, 'in_app_notification_list');
   assertNoQuery(request);
-  const { profileId, service } = await inAppRequestContext(request);
-  return inAppJson(await service.unreadCount(profileId));
+  return inAppJson(await service.unreadCount());
 }
 
 export async function handleGet(request: Request, rawId: string) {
+  const { service } = await inAppRequestContext(request, 'in_app_notification_read');
   assertNoQuery(request);
   const id = parseEntryId(rawId);
-  const { profileId, service } = await inAppRequestContext(request);
-  return inAppJson(await service.detail(profileId, id));
+  return inAppJson(await service.detail(id));
 }
 
 export async function handleState(request: Request, rawId: string, state: 'read' | 'unread') {
+  const { service } = await inAppRequestContext(request, 'in_app_notification_state_update');
   assertNoQuery(request);
   const id = parseEntryId(rawId);
   parseEmptyBody(await smallJson(request));
-  const { profileId, service } = await inAppRequestContext(request);
-  return inAppJson(await service.setState(profileId, id, state));
+  return inAppJson(await service.setState(id, state));
 }
 
 export async function handleMarkAll(request: Request) {
+  const { service } = await inAppRequestContext(request, 'in_app_notification_state_update');
   assertNoQuery(request);
   const token = parseMarkAllBody(await smallJson(request));
-  const { profileId, service } = await inAppRequestContext(request);
-  return inAppJson(await service.markAllRead(profileId, token));
+  return inAppJson(await service.markAllRead(token));
 }

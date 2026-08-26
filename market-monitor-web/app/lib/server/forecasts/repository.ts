@@ -273,7 +273,7 @@ export class D1ForecastRepository implements ForecastRepository {
       this.d1.prepare(`INSERT INTO forecast_events
         (forecast_id, profile_id, revision, event_type, note, payload_json, created_at)
         SELECT id, profile_id,
-          (SELECT COALESCE(MAX(revision), 0) + 1 FROM forecast_events WHERE forecast_id = forecasts.id),
+          (SELECT COALESCE(MAX(revision), 0) + 1 FROM forecast_events WHERE forecast_id = forecasts.id AND profile_id = forecasts.profile_id),
           'draft_updated', '', ?, ? FROM forecasts
         WHERE id = ? AND profile_id = ? AND status = 'draft'`)
         .bind(payload, now, id, profileId),
@@ -300,7 +300,7 @@ export class D1ForecastRepository implements ForecastRepository {
         activation_price = ?, activation_currency = ?, market_provider = ?, analysis_seed_json = NULL,
         analysis_seed_scenario_id = NULL, updated_at = ?
         WHERE id = ? AND profile_id = ? AND status = 'draft' AND updated_at = ?
-        AND (SELECT COALESCE(MAX(revision), 0) FROM forecast_events WHERE forecast_id = forecasts.id) = ?
+        AND (SELECT COALESCE(MAX(revision), 0) FROM forecast_events WHERE forecast_id = forecasts.id AND profile_id = forecasts.profile_id) = ?
         AND (
           EXISTS (SELECT 1 FROM positions WHERE profile_id = forecasts.profile_id AND symbol = forecasts.symbol)
           OR EXISTS (SELECT 1 FROM watchlist_items WHERE profile_id = forecasts.profile_id AND symbol = forecasts.symbol)
@@ -309,7 +309,7 @@ export class D1ForecastRepository implements ForecastRepository {
       this.d1.prepare(`INSERT INTO forecast_events
         (forecast_id, profile_id, revision, event_type, note, payload_json, created_at)
         SELECT id, profile_id,
-          (SELECT COALESCE(MAX(revision), 0) + 1 FROM forecast_events WHERE forecast_id = forecasts.id),
+          (SELECT COALESCE(MAX(revision), 0) + 1 FROM forecast_events WHERE forecast_id = forecasts.id AND profile_id = forecasts.profile_id),
           'activated', '', ?, ? FROM forecasts
         WHERE id = ? AND profile_id = ? AND status = 'active' AND activated_at = ? AND changes() = 1`)
         .bind(JSON.stringify({ quote }), now, id, profileId, now),
@@ -341,7 +341,7 @@ export class D1ForecastRepository implements ForecastRepository {
       this.d1.prepare(`INSERT INTO forecast_events
         (forecast_id, profile_id, revision, event_type, note, payload_json, created_at)
         SELECT id, profile_id,
-          (SELECT COALESCE(MAX(revision), 0) + 1 FROM forecast_events WHERE forecast_id = forecasts.id),
+          (SELECT COALESCE(MAX(revision), 0) + 1 FROM forecast_events WHERE forecast_id = forecasts.id AND profile_id = forecasts.profile_id),
           'cancelled', ?, ?, ? FROM forecasts
         WHERE id = ? AND profile_id = ? AND status = 'cancelled' AND resolved_at = ? AND changes() = 1`)
         .bind(reason, JSON.stringify({ reason }), now, id, profileId, now),
@@ -353,7 +353,7 @@ export class D1ForecastRepository implements ForecastRepository {
     const result = await this.d1.prepare(`INSERT INTO forecast_events
       (forecast_id, profile_id, revision, event_type, note, payload_json, created_at)
       SELECT id, profile_id,
-        (SELECT COALESCE(MAX(revision), 0) + 1 FROM forecast_events WHERE forecast_id = forecasts.id),
+        (SELECT COALESCE(MAX(revision), 0) + 1 FROM forecast_events WHERE forecast_id = forecasts.id AND profile_id = forecasts.profile_id),
         ?, ?, ?, ? FROM forecasts
       WHERE id = ? AND profile_id = ? AND status <> 'draft'`)
       .bind(kind, note, JSON.stringify({ note }), now, id, profileId).run();

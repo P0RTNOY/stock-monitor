@@ -1,5 +1,4 @@
 import { fetchYahooQuote } from '../yahoo';
-import { resolveCurrentProfile } from '../profile';
 import { ensureDatabase, getD1 } from '@/db';
 import { D1ForecastRepository } from './repository';
 import { ForecastService, ForecastServiceError } from './service';
@@ -9,12 +8,45 @@ import { logForecastDiagnostic } from './diagnostics.ts';
 import { evaluateWithPython } from '../evaluation/client.ts';
 import { D1EvaluationRepository } from '../evaluation/repository.ts';
 import { ForecastEvaluationService } from '../evaluation/service.ts';
+import { authorizeHumanRequest } from '../auth/runtime-resolver.ts';
+import { authorizationErrorResponse } from '../auth/http.ts';
+import type { AuthorizationAction } from '../auth/types.ts';
+import { profileIdFromScope, type AuthorizedProfileScope } from '../auth/enforcement.ts';
+import type { ForecastFilters } from './types.ts';
 
 const MAX_REQUEST_BYTES = 600 * 1024;
 
-export async function forecastRequestContext(request: Request) {
+class AuthorizedForecastService {
+  constructor(
+    private readonly scope: AuthorizedProfileScope,
+    private readonly service: ForecastService,
+  ) {}
+
+  list(filters: ForecastFilters) { return this.service.list(profileIdFromScope(this.scope, 'forecast_list'), filters); }
+  get(id: number) { return this.service.get(profileIdFromScope(this.scope, 'forecast_read'), id); }
+  createDraft(body: unknown) { return this.service.createDraft(profileIdFromScope(this.scope, 'forecast_create'), body); }
+  updateDraft(id: number, body: unknown) { return this.service.updateDraft(profileIdFromScope(this.scope, 'forecast_edit'), id, body); }
+  deleteDraft(id: number) { return this.service.deleteDraft(profileIdFromScope(this.scope, 'forecast_delete'), id); }
+  activate(id: number, body: unknown) { return this.service.activate(profileIdFromScope(this.scope, 'forecast_activate'), id, body); }
+  cancel(id: number, body: unknown) { return this.service.cancel(profileIdFromScope(this.scope, 'forecast_cancel'), id, body); }
+  addNote(id: number, body: unknown) { return this.service.addNote(profileIdFromScope(this.scope, 'forecast_note'), id, body); }
+}
+
+class AuthorizedEvaluationService {
+  constructor(
+    private readonly scope: AuthorizedProfileScope,
+    private readonly service: ForecastEvaluationService,
+  ) {}
+
+  evaluate(id: number, body: unknown) { return this.service.evaluate(profileIdFromScope(this.scope, 'forecast_evaluate'), id, body); }
+  listReviews(includeAcknowledged: boolean) { return this.service.listReviews(profileIdFromScope(this.scope, 'review_list'), includeAcknowledged); }
+  latestEvaluation(id: number) { return this.service.latestEvaluation(profileIdFromScope(this.scope, 'evaluation_read'), id); }
+  acknowledgeReview(id: number, body: unknown) { return this.service.acknowledgeReview(profileIdFromScope(this.scope, 'review_acknowledge'), id, body); }
+}
+
+export async function forecastRequestContext(request: Request, action: AuthorizationAction) {
+  const scope = await authorizeHumanRequest(request, action);
   await ensureDatabase();
-  const { profileId } = await resolveCurrentProfile(request);
   const repository = new D1ForecastRepository(getD1());
   const service = new ForecastService(repository, async (symbol, fresh) => {
     const quote = await fetchYahooQuote(symbol, { fresh });
@@ -26,19 +58,19 @@ export async function forecastRequestContext(request: Request) {
       provider: quote.provider,
     };
   });
-  return { profileId, service };
+  return { scope, service: new AuthorizedForecastService(scope, service) };
 }
 
-export async function evaluationRequestContext(request: Request) {
+export async function evaluationRequestContext(request: Request, action: AuthorizationAction) {
+  const scope = await authorizeHumanRequest(request, action);
   await ensureDatabase();
-  const { profileId } = await resolveCurrentProfile(request);
   const d1 = getD1();
   const service = new ForecastEvaluationService(
     new D1ForecastRepository(d1),
     new D1EvaluationRepository(d1),
     evaluateWithPython,
   );
-  return { profileId, service };
+  return { scope, service: new AuthorizedEvaluationService(scope, service) };
 }
 
 export async function requestJson(
@@ -79,6 +111,8 @@ export function forecastJson(payload: unknown, init: ResponseInit = {}) {
 }
 
 export function forecastErrorResponse(error: unknown, operation: string) {
+  const authorizationResponse = authorizationErrorResponse(error);
+  if (authorizationResponse) return authorizationResponse;
   const contract = forecastErrorContract(error);
   if (contract.report) logForecastDiagnostic(operation, error);
   return forecastJson(contract.body, { status: contract.status });

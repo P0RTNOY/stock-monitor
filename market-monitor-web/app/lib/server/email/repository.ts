@@ -429,25 +429,25 @@ export class D1EmailRepository implements EmailRecipientRepository, EmailDispatc
     return changed(results[1]) === 1 && changed(results[2]) === 1;
   }
 
-  async loadCapabilityForAttempt(input: {
-    profileId: number; capabilityId: string; purpose: 'verification' | 'unsubscribe';
+  async loadCapabilityForAttemptByLocator(input: {
+    capabilityId: string; purpose: 'verification' | 'unsubscribe';
     attemptedAt: string; maximumAttempts: number;
   }): Promise<StoredEmailCapability | null> {
     await this.d1.prepare(`UPDATE forecast_email_capabilities
       SET state = 'expired'
-      WHERE id = ? AND profile_id = ? AND purpose = ? AND state = 'active'
+      WHERE id = ? AND purpose = ? AND state = 'active'
         AND expires_at IS NOT NULL AND expires_at <= ?`)
-      .bind(input.capabilityId, input.profileId, input.purpose, input.attemptedAt).run();
+      .bind(input.capabilityId, input.purpose, input.attemptedAt).run();
     const updated = await this.d1.prepare(`UPDATE forecast_email_capabilities
       SET attempt_count = attempt_count + 1, last_attempt_at = ?
-      WHERE id = ? AND profile_id = ? AND purpose = ? AND state = 'active'
+      WHERE id = ? AND purpose = ? AND state = 'active'
         AND attempt_count < ? AND (expires_at IS NULL OR expires_at > ?)`)
-      .bind(input.attemptedAt, input.capabilityId, input.profileId, input.purpose,
+      .bind(input.attemptedAt, input.capabilityId, input.purpose,
         input.maximumAttempts, input.attemptedAt).run();
     if (changed(updated) !== 1) return null;
     return capability(await this.d1.prepare(`${CAPABILITY_SELECT}
-      WHERE id = ? AND profile_id = ? AND purpose = ? AND state = 'active'`)
-      .bind(input.capabilityId, input.profileId, input.purpose).first<CapabilityRow>());
+      WHERE id = ? AND purpose = ? AND state = 'active'`)
+      .bind(input.capabilityId, input.purpose).first<CapabilityRow>());
   }
 
   async consumeVerification(input: {
@@ -909,12 +909,12 @@ export class D1EmailRepository implements EmailRecipientRepository, EmailDispatc
           AND state IN ('request_started', 'ambiguous', 'terminal_failure')
           AND safe_retry_until > ?
           AND NOT EXISTS (SELECT 1 FROM forecast_email_provider_attempts
-            WHERE delivery_id = ? AND state = 'started')
+            WHERE delivery_id = ? AND profile_id = ? AND state = 'started')
           AND EXISTS (SELECT 1 FROM forecast_notification_outbox WHERE id = ?
             AND profile_id = ? AND state = 'claimed' AND lease_token = ?
             AND lease_expires_at > ?)`)
         .bind(input.startedAt, input.startedAt, existing.id, input.profileId,
-          input.claim.outboxId, input.startedAt, existing.id, input.claim.outboxId,
+          input.claim.outboxId, input.startedAt, existing.id, input.profileId, input.claim.outboxId,
           input.profileId, input.ownerToken, input.startedAt));
     }
     const deliveryIndex = statements.length - 1;
@@ -922,10 +922,10 @@ export class D1EmailRepository implements EmailRecipientRepository, EmailDispatc
       (id, delivery_id, profile_id, attempt_number, notification_attempt_id, state,
        started_at, safe_retry_until, created_at)
       SELECT ?, ?, ?, COALESCE(MAX(attempt_number), 0) + 1, ?, 'started', ?, ?, ?
-      FROM forecast_email_provider_attempts WHERE delivery_id = ? HAVING changes() = 1`)
+      FROM forecast_email_provider_attempts WHERE delivery_id = ? AND profile_id = ? HAVING changes() = 1`)
       .bind(input.providerAttemptId, input.deliveryId, input.profileId,
         input.claim.notificationAttemptId, input.startedAt, safeRetryUntil,
-        input.startedAt, input.deliveryId));
+        input.startedAt, input.deliveryId, input.profileId));
     const results = await this.d1.batch(statements);
     if (changed(results[deliveryIndex]) !== 1 || changed(results[statements.length - 1]) !== 1) {
       return { disposition: 'claim_lost', delivery: existing };
@@ -1340,12 +1340,12 @@ export class D1VerificationEmailRepository implements VerificationEmailDeliveryR
           AND state IN ('request_started', 'ambiguous', 'terminal_failure')
           AND safe_retry_until > ? AND NOT EXISTS (
             SELECT 1 FROM forecast_email_provider_attempts
-              WHERE delivery_id = ? AND state = 'started')
+              WHERE delivery_id = ? AND profile_id = ? AND state = 'started')
           AND EXISTS (SELECT 1 FROM forecast_email_capabilities WHERE id = ?
             AND profile_id = ? AND recipient_id = ? AND purpose = 'verification'
             AND state = 'active' AND expires_at > ?)`)
         .bind(input.startedAt, input.startedAt, existing.id, input.profileId,
-          input.capabilityId, input.minimumSafeRetryUntil, existing.id, input.capabilityId,
+          input.capabilityId, input.minimumSafeRetryUntil, existing.id, input.profileId, input.capabilityId,
           input.profileId, input.recipientId, input.startedAt));
     }
     const deliveryIndex = statements.length - 1;
@@ -1353,9 +1353,9 @@ export class D1VerificationEmailRepository implements VerificationEmailDeliveryR
       (id, delivery_id, profile_id, attempt_number, notification_attempt_id, state,
        started_at, safe_retry_until, created_at)
       SELECT ?, ?, ?, COALESCE(MAX(attempt_number), 0) + 1, NULL, 'started', ?, ?, ?
-      FROM forecast_email_provider_attempts WHERE delivery_id = ? HAVING changes() = 1`)
+      FROM forecast_email_provider_attempts WHERE delivery_id = ? AND profile_id = ? HAVING changes() = 1`)
       .bind(input.providerAttemptId, input.deliveryId, input.profileId,
-        input.startedAt, safeRetryUntil, input.startedAt, input.deliveryId));
+        input.startedAt, safeRetryUntil, input.startedAt, input.deliveryId, input.profileId));
     const results = await this.d1.batch(statements);
     if (changed(results[deliveryIndex]) !== 1) {
       return { disposition: 'context_changed', delivery: existing };

@@ -139,7 +139,7 @@ export class D1EvaluationRepository implements EvaluationRepository {
     run: EvaluationRun,
   ) {
     const row = await this.d1.prepare(`SELECT status, updated_at AS updatedAt,
-      (SELECT COALESCE(MAX(revision), 0) FROM forecast_events WHERE forecast_id = forecasts.id) AS revision,
+      (SELECT COALESCE(MAX(revision), 0) FROM forecast_events WHERE forecast_id = forecasts.id AND profile_id = forecasts.profile_id) AS revision,
       EXISTS (
         SELECT 1 FROM forecast_events WHERE forecast_id = forecasts.id AND profile_id = forecasts.profile_id
           AND event_type = 'evaluated' AND json_extract(payload_json, '$.evaluationRunId') = ?
@@ -175,7 +175,7 @@ export class D1EvaluationRepository implements EvaluationRepository {
        input_fingerprint, created_at)
       SELECT profile_id, id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM forecasts
       WHERE id = ? AND profile_id = ? AND status = 'active' AND updated_at = ?
-      AND (SELECT COALESCE(MAX(revision), 0) FROM forecast_events WHERE forecast_id = forecasts.id) = ?`)
+      AND (SELECT COALESCE(MAX(revision), 0) FROM forecast_events WHERE forecast_id = forecasts.id AND profile_id = forecasts.profile_id) = ?`)
       .bind(result.kind, result.reason_code, result.explanation, result.evaluator_version,
         result.ruleset_version, result.evaluated_through, result.evaluation_cutoff,
         JSON.stringify(result.evidence), JSON.stringify(result.evidence.warnings),
@@ -190,9 +190,10 @@ export class D1EvaluationRepository implements EvaluationRepository {
         this.d1.prepare(`INSERT INTO forecast_events
           (forecast_id, profile_id, revision, event_type, note, payload_json, created_at)
           SELECT id, profile_id,
-            (SELECT COALESCE(MAX(revision), 0) + 1 FROM forecast_events WHERE forecast_id = forecasts.id),
+            (SELECT COALESCE(MAX(revision), 0) + 1 FROM forecast_events WHERE forecast_id = forecasts.id AND profile_id = forecasts.profile_id),
             'evaluated', ?, json_object(
               'evaluationRunId', (SELECT id FROM evaluation_runs WHERE forecast_id = forecasts.id
+                AND profile_id = forecasts.profile_id
                 AND evaluator_version = ? AND ruleset_version = ? AND input_fingerprint = ?),
               'resultKind', ?, 'reasonCode', ?), ?
           FROM forecasts WHERE id = ? AND profile_id = ? AND status = ? AND resolved_at = ? AND changes() = 1`)
@@ -263,7 +264,7 @@ export class D1EvaluationRepository implements EvaluationRepository {
       this.d1.prepare(`INSERT INTO forecast_events
         (forecast_id, profile_id, revision, event_type, note, payload_json, created_at)
         SELECT f.id, f.profile_id,
-          (SELECT COALESCE(MAX(revision), 0) + 1 FROM forecast_events WHERE forecast_id = f.id),
+          (SELECT COALESCE(MAX(revision), 0) + 1 FROM forecast_events WHERE forecast_id = f.id AND profile_id = f.profile_id),
           'evaluation_review_acknowledged', 'Evaluation review acknowledged.',
           json_object('reviewItemId', ri.id, 'evaluationRunId', ri.evaluation_run_id), ?
         FROM forecast_review_items ri JOIN forecasts f ON f.id = ri.forecast_id AND f.profile_id = ri.profile_id

@@ -4,9 +4,9 @@ type Context = { params: Promise<{ id: string }> | { id: string } };
 
 export async function GET(request: Request, context: Context) {
   try {
+    const { service } = await forecastRequestContext(request, 'forecast_read');
     const id = await routeForecastId(context);
-    const { profileId, service } = await forecastRequestContext(request);
-    return forecastJson({ forecast: await service.get(profileId, id) });
+    return forecastJson({ forecast: await service.get(id) });
   } catch (error) {
     return forecastErrorResponse(error, 'read');
   }
@@ -14,10 +14,10 @@ export async function GET(request: Request, context: Context) {
 
 export async function PATCH(request: Request, context: Context) {
   try {
+    const { service } = await forecastRequestContext(request, 'forecast_edit');
     const id = await routeForecastId(context);
     const body = await requestJson(request);
-    const { profileId, service } = await forecastRequestContext(request);
-    return forecastJson({ forecast: await service.updateDraft(profileId, id, body) });
+    return forecastJson({ forecast: await service.updateDraft(id, body) });
   } catch (error) {
     return forecastErrorResponse(error, 'update');
   }
@@ -25,9 +25,9 @@ export async function PATCH(request: Request, context: Context) {
 
 export async function DELETE(request: Request, context: Context) {
   try {
+    const { service } = await forecastRequestContext(request, 'forecast_delete');
     const id = await routeForecastId(context);
-    const { profileId, service } = await forecastRequestContext(request);
-    await service.deleteDraft(profileId, id);
+    await service.deleteDraft(id);
     return new Response(null, { status: 204 });
   } catch (error) {
     return forecastErrorResponse(error, 'delete');

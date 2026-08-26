@@ -4,10 +4,10 @@ type Context = { params: Promise<{ id: string }> | { id: string } };
 
 export async function POST(request: Request, context: Context) {
   try {
+    const { service } = await forecastRequestContext(request, 'forecast_cancel');
     const id = await routeForecastId(context);
     const body = await requestJson(request);
-    const { profileId, service } = await forecastRequestContext(request);
-    return forecastJson({ forecast: await service.cancel(profileId, id, body) });
+    return forecastJson({ forecast: await service.cancel(id, body) });
   } catch (error) {
     return forecastErrorResponse(error, 'cancel');
   }

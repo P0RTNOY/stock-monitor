@@ -33,7 +33,9 @@ import {
   type NotificationCategory,
   type NotificationOutboxState,
 } from '../app/lib/server/notifications/types.ts';
-import { resolveCurrentProfile } from '../app/lib/server/profile.ts';
+import { trustedOperatorScope } from '../app/lib/server/auth/system.ts';
+import { AuthorizedNotificationProjectorService } from '../app/lib/server/auth/system-services.ts';
+import { profileIdFromScope } from '../app/lib/server/auth/enforcement.ts';
 
 const CONFIG_PATH = fileURLToPath(new URL('./wrangler.operator.jsonc', import.meta.url));
 const DEFAULT_PERSIST_PATH = '.wrangler/state/v3';
@@ -346,28 +348,21 @@ export async function invokeNotificationProjection(options: NotificationProjecti
   try {
     const d1 = platform.env.DB;
     if (!d1) throw new Error('MissingLocalD1Binding');
-    const { profileId } = await resolveCurrentProfile();
+    const scope = trustedOperatorScope(process.env, 'notification_projection', 'forecast:notifications:project');
+    const profileId = profileIdFromScope(scope, 'notification_projection');
     const repository = new D1NotificationRepository(d1);
     if (options.mode === 'commit') {
       await initializeProjectionDatabase(d1);
       const profile = await d1.prepare('SELECT id FROM investment_profiles WHERE id = ?')
         .bind(profileId).first<{ id: number }>();
-      if (!profile) {
-        await d1.prepare(`INSERT INTO investment_profiles
-          (id, name, base_currency, cash_balance, created_at) VALUES (?, ?, 'USD', 0, ?)`).bind(
-          profileId,
-          'My portfolio',
-          new Date().toISOString(),
-        ).run();
-      }
+      if (!profile) throw new Error('ConfiguredOperatorProfileUnavailable');
     }
-    return await projector(repository).project({
-      profileId,
+    return await new AuthorizedNotificationProjectorService(scope, projector(repository)).project({
       cutoff: options.cutoff,
       limit: options.limit,
       mode: options.mode,
       ...(options.cursor ? { cursor: options.cursor } : {}),
-    }, profileId);
+    });
   } finally {
     await platform.dispose();
   }
@@ -382,16 +377,15 @@ export async function invokeNotificationBackfill(options: NotificationBackfillOp
   try {
     const d1 = platform.env.DB;
     if (!d1) throw new Error('MissingLocalD1Binding');
-    const { profileId } = await resolveCurrentProfile();
+    const scope = trustedOperatorScope(process.env, 'notification_projection', 'forecast:notifications:backfill');
     const repository = new D1NotificationRepository(d1);
-    return await projector(repository).previewHistoricalBackfill({
-      profileId,
+    return await new AuthorizedNotificationProjectorService(scope, projector(repository)).previewHistoricalBackfill({
       fromEvaluationRunId: options.fromEvaluationRunId,
       throughEvaluationRunId: options.throughEvaluationRunId,
       cutoff: options.cutoff,
       limit: options.limit,
       includeNeedsReview: options.includeNeedsReview,
-    } satisfies NotificationHistoricalPreviewInput, profileId);
+    } satisfies Omit<NotificationHistoricalPreviewInput, 'profileId'>);
   } finally {
     await platform.dispose();
   }
@@ -501,7 +495,8 @@ export async function inspectNotificationStatus(
   try {
     const d1 = platform.env.DB;
     if (!d1) throw new Error('MissingLocalD1Binding');
-    const { profileId } = await resolveCurrentProfile();
+    const scope = trustedOperatorScope(process.env, 'operator_status_inspect', 'forecast:notifications:status');
+    const profileId = profileIdFromScope(scope, 'operator_status_inspect');
     const repository = new D1NotificationRepository(d1);
     const filters = {
       limit: options.limit,

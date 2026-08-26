@@ -1,6 +1,8 @@
 import app from 'vinext/server/fetch-handler';
 import { ensureDatabase } from '../db/index.ts';
-import { resolveCurrentProfile } from '../app/lib/server/profile.ts';
+import { trustedSchedulerScope } from '../app/lib/server/auth/system.ts';
+import { AuthorizedSchedulerService } from '../app/lib/server/auth/system-services.ts';
+import { profileIdFromScope } from '../app/lib/server/auth/enforcement.ts';
 import {
   SCHEDULER_VERSION,
   SchedulerConfigurationError,
@@ -14,6 +16,9 @@ import { disabledScheduledInvocation } from '../app/lib/server/scheduler/service
 import type { ScheduledInvocationReport } from '../app/lib/server/scheduler/types.ts';
 
 export type NorthstarWorkerEnv = Cloudflare.Env & {
+  NORTHSTAR_ENVIRONMENT?: string;
+  NORTHSTAR_AUTH_MODE?: string;
+  NORTHSTAR_SYSTEM_PROFILE_ID?: string;
   FORECAST_SCHEDULER_ENABLED?: string;
   FORECAST_SCHEDULER_ENVIRONMENT?: string;
   FORECAST_SCHEDULER_PAGE_SIZE?: string;
@@ -55,8 +60,9 @@ export async function runScheduledEvent(
       schedulerVersion: env.FORECAST_SCHEDULER_VERSION,
       coordinatorVersion: env.FORECAST_COORDINATOR_VERSION,
     });
+    const scope = trustedSchedulerScope(env, config.schedulerVersion);
+    const profileId = profileIdFromScope(scope, 'scheduler_coordinate');
     if (!config.enabled) {
-      const { profileId } = await resolveCurrentProfile();
       return disabledScheduledInvocation(
         { config, profileId, scheduledTime, scheduleExpression: controller.cron },
         structuredSchedulerLogger,
@@ -65,9 +71,11 @@ export async function runScheduledEvent(
     const analysisApiUrl = validateSchedulerProviderUrl(env.ANALYSIS_API_URL, config.environment);
     if (!env.DB) throw new SchedulerConfigurationError('DB', 'Enabled scheduler D1 binding is required.');
     await ensureDatabase();
-    const { profileId } = await resolveCurrentProfile();
-    return createForecastScheduler({ d1: env.DB, analysisApiUrl }).run({
-      config, profileId, scheduledTime, scheduleExpression: controller.cron,
+    return new AuthorizedSchedulerService(
+      scope,
+      createForecastScheduler({ d1: env.DB, analysisApiUrl }),
+    ).run({
+      config, scheduledTime, scheduleExpression: controller.cron,
     });
   } catch (error) {
     const configuration = error instanceof SchedulerConfigurationError;

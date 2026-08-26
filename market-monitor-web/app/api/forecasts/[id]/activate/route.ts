@@ -4,10 +4,10 @@ type Context = { params: Promise<{ id: string }> | { id: string } };
 
 export async function POST(request: Request, context: Context) {
   try {
+    const { service } = await forecastRequestContext(request, 'forecast_activate');
     const id = await routeForecastId(context);
     const body = await requestJson(request, { optional: true });
-    const { profileId, service } = await forecastRequestContext(request);
-    return forecastJson({ forecast: await service.activate(profileId, id, body) });
+    return forecastJson({ forecast: await service.activate(id, body) });
   } catch (error) {
     return forecastErrorResponse(error, 'activate');
   }

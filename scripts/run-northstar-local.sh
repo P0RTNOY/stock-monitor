@@ -43,4 +43,7 @@ if ! curl -fsS http://127.0.0.1:8502/health >/dev/null 2>&1; then
 fi
 
 cd "$project_root/market-monitor-web"
+export NORTHSTAR_ENVIRONMENT="${NORTHSTAR_ENVIRONMENT:-local}"
+export NORTHSTAR_AUTH_MODE="${NORTHSTAR_AUTH_MODE:-local_bootstrap}"
+export NORTHSTAR_SYSTEM_PROFILE_ID="${NORTHSTAR_SYSTEM_PROFILE_ID:-1}"
 npm run dev -- --host 0.0.0.0 --port 8501

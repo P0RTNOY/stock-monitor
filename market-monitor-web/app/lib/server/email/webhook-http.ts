@@ -5,6 +5,8 @@ import {
 } from './webhook-verifier.ts';
 import { ResendWebhookContractError } from './webhook-contract.ts';
 import type { ResendWebhookService } from './webhook-service.ts';
+import { authorize } from '../auth/policy.ts';
+import type { ResendProviderPrincipal } from '../auth/types.ts';
 
 const WEBHOOK_HEADERS = {
   'Cache-Control': 'no-store',
@@ -123,12 +125,21 @@ export function createResendWebhookHandler(dependencies: ResendWebhookHandlerDep
         maxBodyBytes: dependencies.maxBodyBytes,
         nowEpochSeconds: dependencies.nowEpochSeconds(),
       });
+      const principal: ResendProviderPrincipal = {
+        kind: 'provider_resend',
+        provider: 'resend',
+        webhookId: verified.webhookId,
+        verifiedAt: dependencies.now(),
+      };
+      if (!authorize(principal, 'resend_webhook_reconcile', {
+        providerEventId: verified.webhookId,
+      }).allowed) throw new ResendWebhookVerificationError('invalid_signature');
       const service = await dependencies.service();
-      await service.process({
+      await service.process(principal, {
         webhookId: verified.webhookId,
         verifiedPayload: verified.payload,
         rawBody,
-        receivedAt: dependencies.now(),
+        receivedAt: principal.verifiedAt,
       });
       return response(200, null);
     } catch (error) {

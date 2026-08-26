@@ -26,7 +26,9 @@ import { evaluateWithPython } from '../app/lib/server/evaluation/client.ts';
 import { D1EvaluationRepository } from '../app/lib/server/evaluation/repository.ts';
 import { ForecastEvaluationService } from '../app/lib/server/evaluation/service.ts';
 import { D1ForecastRepository } from '../app/lib/server/forecasts/repository.ts';
-import { resolveCurrentProfile } from '../app/lib/server/profile.ts';
+import { trustedOperatorScope } from '../app/lib/server/auth/system.ts';
+import { AuthorizedCoordinatorService } from '../app/lib/server/auth/system-services.ts';
+import { profileIdFromScope } from '../app/lib/server/auth/enforcement.ts';
 
 const CONFIG_PATH = fileURLToPath(new URL('./wrangler.operator.jsonc', import.meta.url));
 const DEFAULT_PERSIST_PATH = '.wrangler/state/v3';
@@ -144,8 +146,21 @@ export function parseOperatorArgs(argv: string[]): OperatorCliOptions {
   };
 }
 
+function visibleCoordinatorReport(report: CoordinatorRunReport) {
+  const { profileId, items, ...visible } = report;
+  void profileId;
+  return {
+    ...visible,
+    items: items.map((item) => {
+      const { profileId: itemProfileId, ...visibleItem } = item;
+      void itemProfileId;
+      return visibleItem;
+    }),
+  };
+}
+
 export function renderJsonReport(report: CoordinatorRunReport) {
-  return JSON.stringify(report, null, 2);
+  return JSON.stringify(visibleCoordinatorReport(report), null, 2);
 }
 
 function text(value: string | number | boolean | null) {
@@ -160,7 +175,7 @@ export function renderHumanReport(report: CoordinatorRunReport) {
   const lines = [
     'Northstar due-forecast coordinator',
     `Run: ${report.runId} (${report.coordinatorVersion})`,
-    `Status: ${report.status} | mode=${report.mode} | profile=${report.profileId} | cutoff=${report.cutoff}`,
+    `Status: ${report.status} | mode=${report.mode} | cutoff=${report.cutoff}`,
     `Counts: selected=${report.selectedCount} attempted=${report.attemptedCount} mutated=${report.mutatedCount} unexpected=${report.unexpectedErrorCount}`,
     `Outcomes: ${outcomes}`,
     `Duration: ${text(report.totalDurationMs)} ms | replay=${report.replayUsedExistingRun} | hasMore=${report.hasMore}`,
@@ -230,15 +245,12 @@ export async function invokeCoordinator(options: OperatorCliOptions) {
   try {
     const d1 = platform.env.DB;
     if (!d1) throw new CoordinatorSystemError('The local operator D1 binding is unavailable.');
+    const scope = trustedOperatorScope(process.env, 'scheduler_coordinate', 'forecast:coordinate');
+    const profileId = profileIdFromScope(scope, 'scheduler_coordinate');
     await initializeOperatorDatabase(d1);
-    const { profileId } = await resolveCurrentProfile();
     const existingProfile = await d1.prepare('SELECT id FROM investment_profiles WHERE id = ?')
       .bind(profileId).first<{ id: number }>();
-    if (!existingProfile) {
-      await d1.prepare(`INSERT INTO investment_profiles
-        (id, name, base_currency, cash_balance, created_at) VALUES (?, ?, 'USD', 0, ?)`)
-        .bind(profileId, 'My portfolio', new Date().toISOString()).run();
-    }
+    if (!existingProfile) throw new CoordinatorSystemError('The configured operator profile is unavailable.');
 
     const forecasts = new D1ForecastRepository(d1);
     const evaluator = new ForecastEvaluationService(
@@ -253,14 +265,14 @@ export async function invokeCoordinator(options: OperatorCliOptions) {
       evaluator,
       operatorRuntime(),
     );
-    return await coordinator.coordinate({
+    return await new AuthorizedCoordinatorService(scope, coordinator).coordinate({
       profileId,
       cutoff: options.cutoff,
       limit: options.limit,
       mode: options.mode,
       ...(options.cursor ? { cursor: options.cursor } : {}),
       ...(options.operatorRunKey ? { operatorRunKey: options.operatorRunKey } : {}),
-    }, profileId);
+    });
   } finally {
     await platform.dispose();
   }

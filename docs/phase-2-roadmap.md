@@ -81,23 +81,28 @@ Phase 2C2B implements the verified email delivery foundation defined in [`foreca
 
 No live Resend call, remote D1 migration, Worker deployment, webhook registration, sender-domain/DNS change, or email dispatcher Cron activation was performed. Resend acceptance/delivery, remote concurrency, production operator security, and process-kill recovery remain unverified. Recipient verification is not user authentication, and the fixed profile remains unsuitable for public multi-user operation.
 
-## Phase 2C2C — exact next step
+## Phase 2C2C — complete
 
-Build a durable in-app Notification Center without bypassing the trusted evidence and outbox contracts:
+Phase 2C2C implements the durable in-app Notification Center defined in [`forecast-in-app-notification-center-phase-2c2c.md`](forecast-in-app-notification-center-phase-2c2c.md):
 
-1. Materialize profile-scoped in-app entries from existing intents, with deterministic identity and no reevaluation.
-2. Add append-preserved read/unread timestamps and bounded stable pagination.
-3. Deep-link each item to immutable forecast, review, evaluation, and delivery evidence where available.
-4. Present suppressed, deferred, ambiguous, dead-letter, and delivered states honestly rather than treating all notifications as successful.
-5. Add channel-preference and recipient-management UI only behind real authentication, authorization, and tenant isolation.
-6. Design a separately authorized dispatcher schedule only after remote D1 migration, Resend domain/sender, deployed webhook, consent, observability, alerting, rollback, and kill-switch behavior are verified.
+- deterministic profile-scoped projection from existing trusted intents with no reevaluation, provider access, or email-policy dependency;
+- first-run baseline, explicit cutoff, bounded pages, fenced lease, durable poison-row classification, replay-safe identity, and a separately confirmed bounded historical action;
+- immutable presentation snapshots and server-derived evidence links with exact evaluation/review identity;
+- append-preserved read/unread/mark-all history, permanent first-read timestamps, and sequence-bound mark-all snapshots;
+- checksummed profile/filter-bound descending keyset pagination, exact unread counts, and strict fixed-profile APIs;
+- a dedicated responsive `/notifications` Center, accessible bell, filters, load-more, explicit state controls, confirmation dialog, and read-only evidence route; and
+- honest independent email evidence for not-configured, queued/in-progress, provider-accepted, delivered, delayed, ambiguous, failed, bounced, complained, and suppressed states.
 
-Phase 2C2C has not started. It must not activate email dispatch scheduling as an incidental implementation step, expose recipient administration publicly, add other external channels, or weaken Phase 2C2B consent/idempotency/reconciliation guarantees.
+No remote migration, deployment, live email, Cron activation, recipient UI, public profile selection, or external channel was added. Browser notification reads do not initialize schema or call providers. The fixed profile remains unsuitable for public multi-user operation.
+
+## Phase 3A — exact next step
+
+Add authenticated identity, authorization, and tenant isolation before any public multi-user exposure, recipient-management UI, channel-preference UI, or production dispatcher scheduling. Phase 3A must replace the fixed-profile resolver with a verified session/tenant boundary and prove same-tenant ownership through forecast, evaluation, notification, email, webhook, and operator paths. Phase 3A has not started.
 
 ## Later sequence
 
-1. **In-app notifications and authorized production delivery**
-   - Complete the Phase 2C2C Notification Center and the remaining authentication/remote-runtime/provider verification above.
+1. **Authentication and authorized production delivery**
+   - Complete Phase 3A identity/tenant isolation and the remaining remote-runtime/provider verification above.
    - Preserve bounded execution, replay safety, consent, redaction, and duplicate-delivery protection.
 
 2. **Accuracy and calibration analytics**

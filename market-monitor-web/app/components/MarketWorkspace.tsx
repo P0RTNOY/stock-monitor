@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { isTechnicalAnalysisReport } from '../lib/analysis';
 import { todayLocalDate } from '../lib/forecasts';
@@ -7,6 +8,7 @@ import { alertIsTriggered, portfolioHistory, portfolioMetrics, positionValue, rs
 import ForecastWorkspace, { type ForecastComposeRequest } from './ForecastWorkspace';
 import TechnicalAnalysisPanel from './TechnicalAnalysisPanel';
 import TickerAutocomplete from './TickerAutocomplete';
+import NotificationBell from './NotificationBell';
 import type {
   AnalysisAssumptions,
   ForecastSeed,
@@ -249,12 +251,12 @@ export default function MarketWorkspace() {
   return <div className="app-shell">
     <aside className="sidebar">
       <button className="brand-mark" onClick={() => openSection('overview')} aria-label="Northstar overview">N</button>
-      <nav aria-label="Primary navigation">{navItems.map((item) => <button key={item.id} className={`nav-item ${section === item.id ? 'active' : ''}`} onClick={() => openSection(item.id)} aria-current={section === item.id ? 'page' : undefined}><span className="nav-icon">{item.icon}</span><span>{item.label}</span>{item.id === 'alerts' && triggeredAlerts.length > 0 && <b className="nav-badge">{triggeredAlerts.length}</b>}</button>)}</nav>
+      <nav aria-label="Primary navigation">{navItems.map((item) => <button key={item.id} className={`nav-item ${section === item.id ? 'active' : ''}`} onClick={() => openSection(item.id)} aria-current={section === item.id ? 'page' : undefined}><span className="nav-icon">{item.icon}</span><span>{item.label}</span>{item.id === 'alerts' && triggeredAlerts.length > 0 && <b className="nav-badge">{triggeredAlerts.length}</b>}</button>)}<Link className="nav-item" href="/notifications"><span className="nav-icon">♢</span><span>Notifications</span></Link></nav>
       <button className="sidebar-footer" onClick={() => setModal('profile')}><span className="profile-avatar">{workspace.profile.name.split(/\s+/).map((word) => word[0]).join('').slice(0, 2).toUpperCase()}</span><span><strong>{workspace.profile.name}</strong><small>Personal workspace</small></span></button>
     </aside>
 
     <main className="workspace">
-      <header className="topbar"><div><p className="eyebrow">Northstar / {section}</p><h1>{sectionTitles[section]}</h1></div><div className="topbar-actions"><button className="icon-button" onClick={() => openSection('markets')} aria-label="Open market search">⌕</button>{section === 'forecasts' ? <button className="secondary-button" onClick={() => createForecast()}>＋ Create forecast</button> : <button className="secondary-button" onClick={() => setModal('position')}>＋ Add position</button>}</div></header>
+      <header className="topbar"><div><p className="eyebrow">Northstar / {section}</p><h1>{sectionTitles[section]}</h1></div><div className="topbar-actions"><NotificationBell /><button className="icon-button" onClick={() => openSection('markets')} aria-label="Open market search">⌕</button>{section === 'forecasts' ? <button className="secondary-button" onClick={() => createForecast()}>＋ Create forecast</button> : <button className="secondary-button" onClick={() => setModal('position')}>＋ Add position</button>}</div></header>
       <section className={`market-status ${dataMode}`} aria-label="Market data status"><span className="status-dot" /><strong>{dataMode === 'live' ? 'Real market snapshot' : dataMode === 'partial' ? 'Partial market snapshot' : dataMode === 'loading' ? 'Loading market data' : 'Market data unavailable'}</strong><span>{marketError ?? (fetchedAt ? `Provider response ${new Date(fetchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : allSymbols.length ? 'Waiting for the market provider' : 'Add a position or watchlist symbol to request real quotes')}</span><button onClick={() => void refreshQuotes(allSymbols)} disabled={refreshing || !allSymbols.length}>{refreshing ? 'Refreshing…' : 'Refresh data ↻'}</button></section>
 
       {section === 'overview' && <Overview workspace={workspace} quotes={quotes} metrics={metrics} history={history} currency={currency} openSection={openSection} />}

@@ -1,36 +1,26 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROUTE_AUTHORIZATION_MANIFEST } from '../app/lib/server/auth/route-manifest.ts';
+import {
+  NON_ROUTE_EXECUTION_BOUNDARIES,
+  ROUTE_AUTHORIZATION_MANIFEST,
+} from '../app/lib/server/auth/route-manifest.ts';
 import {
   PLATFORM_MANAGED_TABLES,
   TABLE_OWNERSHIP_MANIFEST,
 } from '../app/lib/server/auth/ownership-manifest.ts';
-import { authorizationIntegrityStatements } from '../db/authorization-initialization.ts';
+import {
+  authorizationIntegrityTriggerManifest,
+  normalizedAuthorizationTriggerSql,
+} from '../db/authorization-initialization.ts';
 
 const WEB_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const CONFIG_PATH = fileURLToPath(new URL('./wrangler.operator.jsonc', import.meta.url));
 const DEFAULT_PERSIST_PATH = '.wrangler/state/v3';
 const AUTH_TABLES = ['identity_users', 'profile_memberships', 'profile_membership_events'] as const;
-const REQUIRED_AUTH_TRIGGERS = authorizationIntegrityStatements().map((statement) => {
-  const name = statement.match(/TRIGGER IF NOT EXISTS ([a-z0-9_]+)/u)?.[1];
-  if (!name) throw new Error('AuthorizationTriggerManifestInvalid');
-  return name;
-});
-const REQUIRED_AUTH_TRIGGER_SQL = new Map(authorizationIntegrityStatements().map((statement) => {
-  const name = statement.match(/TRIGGER IF NOT EXISTS ([a-z0-9_]+)/u)?.[1];
-  if (!name) throw new Error('AuthorizationTriggerManifestInvalid');
-  return [name, statement] as const;
-}));
-
-function normalizedTriggerSql(value: string) {
-  return value.toLowerCase()
-    .replace(/\bif\s+not\s+exists\b/gu, '')
-    .replace(/[`";]/gu, '')
-    .replace(/\s+/gu, ' ')
-    .replace(/\s*([(),])\s*/gu, '$1')
-    .trim();
-}
+const REQUIRED_AUTH_TRIGGER_MANIFEST = authorizationIntegrityTriggerManifest();
+const REQUIRED_AUTH_TRIGGERS = REQUIRED_AUTH_TRIGGER_MANIFEST.map(({ name }) => name);
+const REQUIRED_AUTH_TRIGGER_SQL = new Map(REQUIRED_AUTH_TRIGGER_MANIFEST.map(({ name, sql }) => [name, sql]));
 const BOOTSTRAP_IDS = {
   user: 'northstar-bootstrap-user-v1',
   membership: 'northstar-bootstrap-owner-v1',
@@ -105,6 +95,10 @@ export type RouteAuditReport = {
     fixedResolverReferenceCount: number;
     unexpectedGlobalIdRepositoryReferenceCount: number;
     routeActionMismatchCount: number;
+    nonRouteBoundaryCount: number;
+    nonRouteMissingCount: number;
+    nonRouteDuplicateCount: number;
+    nonRouteEvidenceMismatchCount: number;
   };
   blockers: string[];
 };
@@ -148,6 +142,13 @@ export function auditRoutes(root = WEB_ROOT): RouteAuditReport {
     return [entry.action, ...(entry.additionalActions ?? [])]
       .some((action) => !text.includes(`'${action}'`) && !text.includes(`"${action}"`));
   });
+  const nonRouteKeys = NON_ROUTE_EXECUTION_BOUNDARIES.map((entry) => `${entry.source}#${entry.name}`);
+  const nonRouteDuplicates = nonRouteKeys.filter((value, index) => nonRouteKeys.indexOf(value) !== index);
+  const missingNonRouteSources = NON_ROUTE_EXECUTION_BOUNDARIES.filter((entry) =>
+    !existsSync(join(root, entry.source)));
+  const nonRouteEvidenceMismatches = NON_ROUTE_EXECUTION_BOUNDARIES.filter((entry) =>
+    'evidence' in entry && existsSync(join(root, entry.source))
+      && !readFileSync(join(root, entry.source), 'utf8').includes(entry.evidence));
   const blockers = [
     ...unclassified.map(() => 'route_unclassified'),
     ...stale.map(() => 'route_manifest_stale'),
@@ -155,6 +156,9 @@ export function auditRoutes(root = WEB_ROOT): RouteAuditReport {
     ...fixedResolverReferences.map(() => 'fixed_profile_resolver_reference'),
     ...unexpectedGlobalIdReferences.map(() => 'unscoped_repository_id_lookup'),
     ...routeActionMismatches.map(() => 'route_action_mismatch'),
+    ...nonRouteDuplicates.map(() => 'non_route_manifest_duplicate'),
+    ...missingNonRouteSources.map(() => 'non_route_manifest_stale'),
+    ...nonRouteEvidenceMismatches.map(() => 'non_route_boundary_missing'),
   ].sort();
   return {
     schemaVersion: 'northstar-auth-route-audit-1',
@@ -171,6 +175,10 @@ export function auditRoutes(root = WEB_ROOT): RouteAuditReport {
       fixedResolverReferenceCount: fixedResolverReferences.length,
       unexpectedGlobalIdRepositoryReferenceCount: unexpectedGlobalIdReferences.length,
       routeActionMismatchCount: routeActionMismatches.length,
+      nonRouteBoundaryCount: NON_ROUTE_EXECUTION_BOUNDARIES.length,
+      nonRouteMissingCount: missingNonRouteSources.length,
+      nonRouteDuplicateCount: nonRouteDuplicates.length,
+      nonRouteEvidenceMismatchCount: nonRouteEvidenceMismatches.length,
     },
     blockers,
   };
@@ -259,6 +267,9 @@ export async function auditTenant(
   let membershipIntegrityViolationCount = 0;
   let missingAuthorizationTriggerCount = 0;
   let invalidAuthorizationTriggerCount = 0;
+  const triggers = await d1.prepare(`SELECT name, sql FROM sqlite_master
+    WHERE type = 'trigger' AND name IN (${REQUIRED_AUTH_TRIGGERS.map(() => '?').join(', ')})`)
+    .bind(...REQUIRED_AUTH_TRIGGERS).all<{ name: string; sql: string }>();
   if (authorizationSchemaPresent) {
     const user = await d1.prepare(`SELECT status, external_identity_state AS externalState
       FROM identity_users WHERE id = ?`).bind(BOOTSTRAP_IDS.user)
@@ -269,7 +280,9 @@ export async function auditTenant(
       FROM profile_memberships m JOIN identity_users u ON u.id = m.user_id
       JOIN profile_membership_events e ON e.membership_id = m.id AND e.profile_id = m.profile_id
       WHERE m.id = ? AND u.id = ? AND e.id = ? AND m.role = 'owner'
-        AND m.status = 'active' AND u.status = 'active'`,
+        AND m.status = 'active' AND u.status = 'active'
+        AND e.revision = 1 AND e.event_type = 'created' AND e.role = 'owner'
+        AND e.status = 'active' AND e.actor_kind = 'bootstrap_migration'`,
     [BOOTSTRAP_IDS.membership, BOOTSTRAP_IDS.user, BOOTSTRAP_IDS.event]);
     membershipIntegrityViolationCount = await scalar(d1, `SELECT COUNT(*) AS count
       FROM profile_memberships m
@@ -280,14 +293,26 @@ export async function auditTenant(
         OR m.revision <> (
           SELECT COALESCE(MAX(e.revision), 0) FROM profile_membership_events e
           WHERE e.membership_id = m.id)`);
-    const triggers = await d1.prepare(`SELECT name, sql FROM sqlite_master
-      WHERE type = 'trigger' AND name IN (${REQUIRED_AUTH_TRIGGERS.map(() => '?').join(', ')})`)
-      .bind(...REQUIRED_AUTH_TRIGGERS).all<{ name: string; sql: string }>();
+    membershipIntegrityViolationCount += await scalar(d1, `SELECT COUNT(*) AS count
+      FROM profile_membership_events e
+      LEFT JOIN profile_membership_events previous
+        ON previous.membership_id = e.membership_id AND previous.revision = e.revision - 1
+      WHERE (e.revision = 1 AND (e.event_type <> 'created' OR e.status <> 'active'))
+        OR (e.revision > 1 AND (
+          previous.id IS NULL OR NOT (
+            (e.status = previous.status AND e.role <> previous.role AND e.event_type = 'role_changed')
+            OR (previous.status = 'active' AND e.status = 'revoked'
+              AND e.role = previous.role AND e.event_type = 'revoked')
+            OR (previous.status = 'revoked' AND e.status = 'active'
+              AND e.role = previous.role AND e.event_type = 'restored')
+          )))`);
     missingAuthorizationTriggerCount = REQUIRED_AUTH_TRIGGERS.length - triggers.results.length;
     invalidAuthorizationTriggerCount = triggers.results.filter((trigger) =>
-      normalizedTriggerSql(trigger.sql) !== normalizedTriggerSql(
+      normalizedAuthorizationTriggerSql(trigger.sql) !== normalizedAuthorizationTriggerSql(
         REQUIRED_AUTH_TRIGGER_SQL.get(trigger.name) ?? '',
       )).length;
+  } else {
+    invalidAuthorizationTriggerCount = triggers.results.length;
   }
   const ambiguousLegacyProfiles = profileCount > 1 && bootstrapIdentityState === 'missing';
   const missingNonAuthorizationTables = missingExpected.filter((table) =>

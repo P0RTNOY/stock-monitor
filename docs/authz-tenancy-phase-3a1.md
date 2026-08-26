@@ -69,7 +69,7 @@ The executable method-level inventory is `app/lib/server/auth/route-manifest.ts`
 | System only | Worker scheduled callback and local operator commands; neither is an application route |
 | Build/static | Framework routing/assets and explicitly inventoried `public/og.png` |
 
-The Vite analysis bridge is separately inventoried and propagates authorization responses. Protected results use `no-store`; tenant data is never placed in a shared public cache.
+Development and production both use the same `/api/analysis` route and exact `analysis_run` authorization boundary; there is no Vite-only proxy with weaker authority. Protected results use `no-store`; tenant data is never placed in a shared public cache.
 
 ## Service and repository enforcement
 
@@ -93,7 +93,7 @@ The machine-enforced 41-table inventory is `app/lib/server/auth/ownership-manife
 | Email | recipients, consent, capabilities, pre-send decisions, deliveries, attempts, suppression |
 | Provider hybrid | `forecast_email_provider_events`; nullable profile only until a signed event resolves through stored delivery identity |
 
-Legacy forecast event/evaluation/snapshot/review relationships now have SQLite insert/update tenant guards; forecast ownership is immutable. Membership events reject updates/deletes, membership identity fields are immutable, and membership deletion is prohibited in favor of revocation. Role, status, and revision changes require a matching next-revision event with the exact resulting state; the tenant audit verifies current membership state against the latest event and checks that all required authorization triggers exist.
+Legacy forecast event/evaluation/snapshot/review relationships now have SQLite insert/update tenant guards; forecast ownership is immutable. Membership events reject updates/deletes, membership identity fields are immutable, and membership deletion is prohibited in favor of revocation. Role, status, and revision changes require a matching next-revision event with the exact resulting state; the tenant audit verifies current membership state, creation and transition semantics, and canonical bootstrap provenance against the event history. Preflight rejects authorization-trigger name collisions before schema creation, and runtime initialization verifies every required trigger's normalized definition before serving requests.
 
 ## Migration `0009`
 
@@ -126,7 +126,7 @@ These commands do not initialize, repair, or select remote data. Output omits pr
 
 - `auth:bootstrap:status` is pre-mutation: a clean one-profile Phase 2C2C database reports `migration_required` and `migrationReady: true`.
 - `auth:tenant-audit` is post-migration and requires complete authorization schema, a usable bootstrap owner, membership/event parity, the full required integrity-trigger set with matching normalized definitions, clean ownership/FK/cross-profile checks, and a complete ownership inventory.
-- `auth:route-audit` opens no D1 binding and fails on missing/stale/duplicate classification, a declared action missing from its enforcement source, a fixed-profile resolver reference, or an unexpected global-ID SQL lookup. Its narrow allowlist covers only deterministic bootstrap identity lookup, purpose-bound capability lookup, and verified provider evidence reconciliation.
+- `auth:route-audit` opens no D1 binding and fails on missing/stale/duplicate route or non-route classification, a declared action missing from its enforcement source, a fixed-profile resolver reference, or an unexpected global-ID SQL lookup. Its narrow allowlist covers only deterministic bootstrap identity lookup, purpose-bound capability lookup, and verified provider evidence reconciliation.
 
 ## Security properties and verification scope
 

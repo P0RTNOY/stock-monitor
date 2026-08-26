@@ -17,12 +17,16 @@ import {
   type MembershipRole,
 } from './server/auth/types.ts';
 import { TABLE_OWNERSHIP_MANIFEST } from './server/auth/ownership-manifest.ts';
-import { ROUTE_AUTHORIZATION_MANIFEST } from './server/auth/route-manifest.ts';
+import {
+  NON_ROUTE_EXECUTION_BOUNDARIES,
+  ROUTE_AUTHORIZATION_MANIFEST,
+} from './server/auth/route-manifest.ts';
 import { AuthorizationBoundaryError } from './server/auth/enforcement.ts';
 import {
   authorizationInitializationStatements,
   authorizationIntegrityStatements,
   assertAuthorizationInitializationReady,
+  assertAuthorizationIntegrityReady,
   ensureAuthorizationBootstrap,
 } from '../../db/authorization-initialization.ts';
 import { auditRoutes, auditTenant, renderAudit } from '../../operator/auth-audit.ts';
@@ -435,7 +439,7 @@ test('runtime authorization DDL matches migration tables, indexes, and integrity
   migrated.close();
 });
 
-test('runtime authorization preflight blocks ambiguous legacy state before creating auth tables', async () => {
+test('runtime authorization preflight blocks ambiguous legacy state and trigger-name collisions', async () => {
   const db = new DatabaseSync(':memory:');
   for (const migration of migrationsThrough(8)) applyMigration(db, migration);
   db.exec(`INSERT INTO investment_profiles VALUES
@@ -448,6 +452,20 @@ test('runtime authorization preflight blocks ambiguous legacy state before creat
   assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM sqlite_master
     WHERE type = 'table' AND name = 'identity_users'`).get() as { count: number }).count, 0);
   db.close();
+
+  const collision = new DatabaseSync(':memory:');
+  for (const migration of migrationsThrough(8)) applyMigration(collision, migration);
+  collision.exec(`CREATE TRIGGER forecast_events_tenant_guard_insert
+    BEFORE INSERT ON forecast_events BEGIN SELECT 1; END`);
+  const collisionD1 = new SQLiteD1(collision) as unknown as D1Database;
+  await assert.rejects(
+    assertAuthorizationInitializationReady(collisionD1),
+    /AuthorizationTriggerConflict/u,
+  );
+  const collisionAudit = await auditTenant(collisionD1, 'auth:bootstrap:status');
+  assert.equal(collisionAudit.summary.migrationReady, false);
+  assert.ok(collisionAudit.blockers.includes('authorization_trigger_invalid'));
+  collision.close();
 });
 
 test('fresh runtime bootstrap creates one empty tenant and is idempotent without reactivating revocation', async () => {
@@ -469,6 +487,12 @@ test('fresh runtime bootstrap creates one empty tenant and is idempotent without
   await ensureAuthorizationBootstrap(d1);
   assert.equal((db.prepare(`SELECT status FROM identity_users`).get() as { status: string }).status, 'disabled');
   assert.equal((db.prepare(`SELECT status FROM profile_memberships`).get() as { status: string }).status, 'revoked');
+  db.exec('DROP TRIGGER profile_membership_events_append_only_update');
+  db.exec(`UPDATE profile_membership_events SET actor_kind = 'system_operator'
+    WHERE id = 'northstar-bootstrap-owner-created-v1'`);
+  db.exec(authorizationIntegrityStatements().find((statement) =>
+    statement.includes('profile_membership_events_append_only_update')) ?? '');
+  await assert.rejects(ensureAuthorizationBootstrap(d1), /AuthorizationBootstrapIntegrityInvalid/u);
   db.close();
 });
 
@@ -504,6 +528,24 @@ test('tenant audit is aggregate-only, read-only, and blocks orphaned and cross-p
   const invalidTrigger = await auditTenant(new SQLiteD1(clean) as unknown as D1Database);
   assert.equal(invalidTrigger.summary.missingAuthorizationTriggerCount, 0);
   assert.ok(invalidTrigger.blockers.includes('authorization_trigger_invalid'));
+  await assert.rejects(
+    assertAuthorizationIntegrityReady(new SQLiteD1(clean) as unknown as D1Database),
+    /AuthorizationIntegrityTriggerInvalid/u,
+  );
+  clean.exec('DROP TRIGGER forecast_events_tenant_guard_insert');
+  clean.exec(authorizationIntegrityStatements().find((statement) =>
+    statement.includes('forecast_events_tenant_guard_insert')) ?? '');
+  clean.exec('DROP TRIGGER profile_memberships_change_requires_event');
+  clean.exec(`INSERT INTO profile_membership_events VALUES
+      ('invalid-noop-v2', 'northstar-bootstrap-owner-v1', 'northstar-bootstrap-user-v1', 9,
+       2, 'role_changed', 'owner', 'active', 'system_operator', '2026-01-02T00:00:00.000Z');
+    UPDATE profile_memberships SET revision = 2, updated_at = '2026-01-02T00:00:00.000Z'
+      WHERE id = 'northstar-bootstrap-owner-v1'`);
+  clean.exec(authorizationIntegrityStatements().find((statement) =>
+    statement.includes('profile_memberships_change_requires_event')) ?? '');
+  const invalidHistory = await auditTenant(new SQLiteD1(clean) as unknown as D1Database);
+  assert.ok(invalidHistory.summary.membershipIntegrityViolationCount > 0);
+  assert.ok(invalidHistory.blockers.includes('membership_history_mismatch'));
   clean.close();
 
   const corrupt = new DatabaseSync(':memory:');
@@ -556,8 +598,16 @@ test('route and ownership inventories cover every current route and generated ta
   assert.match(pageBoundary, /local bootstrap owner/u);
   assert.match(pageBoundary, /Do not deploy this mode/u);
   assert.doesNotMatch(pageBoundary, /<form|password|email address/u);
+  const viteConfiguration = readFileSync(new URL('../../vite.config.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(viteConfiguration, /localAnalysisBridge|\/api\/workspace/u,
+    'development must not shadow the exact analysis_run route with workspace_read authority');
   const routeAudit = auditRoutes();
   assert.equal(routeAudit.releaseBlocking, false);
+  assert.equal(NON_ROUTE_EXECUTION_BOUNDARIES.length, 3);
+  assert.equal(routeAudit.summary.nonRouteBoundaryCount, 3);
+  assert.equal(routeAudit.summary.nonRouteMissingCount, 0);
+  assert.equal(routeAudit.summary.nonRouteDuplicateCount, 0);
+  assert.equal(routeAudit.summary.nonRouteEvidenceMismatchCount, 0);
   assert.equal(routeAudit.summary.unexpectedGlobalIdRepositoryReferenceCount, 0);
   assert.equal(routeAudit.summary.routeActionMismatchCount, 0);
 });

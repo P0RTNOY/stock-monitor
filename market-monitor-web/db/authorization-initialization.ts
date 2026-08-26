@@ -123,6 +123,35 @@ export function authorizationIntegrityStatements() {
   ];
 }
 
+export function normalizedAuthorizationTriggerSql(value: string) {
+  return value.toLowerCase()
+    .replace(/\bif\s+not\s+exists\b/gu, '')
+    .replace(/[`";]/gu, '')
+    .replace(/\s+/gu, ' ')
+    .replace(/\s*([(),])\s*/gu, '$1')
+    .trim();
+}
+
+export function authorizationIntegrityTriggerManifest() {
+  return authorizationIntegrityStatements().map((sql) => {
+    const name = sql.match(/TRIGGER IF NOT EXISTS ([a-z0-9_]+)/u)?.[1];
+    if (!name) throw new Error('AuthorizationTriggerManifestInvalid');
+    return { name, sql } as const;
+  });
+}
+
+export async function assertAuthorizationIntegrityReady(d1: D1Database) {
+  const manifest = authorizationIntegrityTriggerManifest();
+  const triggers = await d1.prepare(`SELECT name, sql FROM sqlite_master
+    WHERE type = 'trigger' AND name IN (${manifest.map(() => '?').join(', ')})`)
+    .bind(...manifest.map(({ name }) => name)).all<{ name: string; sql: string }>();
+  const expected = new Map(manifest.map(({ name, sql }) => [name, normalizedAuthorizationTriggerSql(sql)]));
+  if (triggers.results.length !== manifest.length || triggers.results.some(({ name, sql }) =>
+    normalizedAuthorizationTriggerSql(sql) !== expected.get(name))) {
+    throw new Error('AuthorizationIntegrityTriggerInvalid');
+  }
+}
+
 export async function assertAuthorizationInitializationReady(d1: D1Database) {
   const schema = await d1.prepare(`SELECT COUNT(*) AS count FROM sqlite_master
     WHERE type = 'table' AND name IN ('identity_users', 'profile_memberships', 'profile_membership_events')`)
@@ -132,6 +161,12 @@ export async function assertAuthorizationInitializationReady(d1: D1Database) {
     throw new Error('AuthorizationSchemaPartial');
   }
   if (authorizationTableCount === 3) return;
+
+  const triggerManifest = authorizationIntegrityTriggerManifest();
+  const triggerCollision = await d1.prepare(`SELECT COUNT(*) AS count FROM sqlite_master
+    WHERE type = 'trigger' AND name IN (${triggerManifest.map(() => '?').join(', ')})`)
+    .bind(...triggerManifest.map(({ name }) => name)).first<{ count: number }>();
+  if (Number(triggerCollision?.count ?? 0) > 0) throw new Error('AuthorizationTriggerConflict');
 
   const readiness = await d1.prepare(`SELECT
       (SELECT COUNT(*) FROM investment_profiles) AS profileCount,
@@ -160,15 +195,36 @@ export async function ensureAuthorizationBootstrap(d1: D1Database) {
       u.id AS userId,
       m.id AS membershipId,
       m.profile_id AS profileId,
-      e.id AS eventId
+      e.id AS eventId,
+      e.event_type AS eventType,
+      e.role AS eventRole,
+      e.status AS eventStatus,
+      e.actor_kind AS eventActorKind
     FROM identity_users u
     JOIN profile_memberships m ON m.user_id = u.id
     JOIN profile_membership_events e
       ON e.membership_id = m.id AND e.user_id = m.user_id AND e.profile_id = m.profile_id AND e.revision = 1
     WHERE u.id = ? AND m.id = ? AND e.id = ?`)
     .bind(BOOTSTRAP_USER_ID, BOOTSTRAP_MEMBERSHIP_ID, BOOTSTRAP_MEMBERSHIP_EVENT_ID)
-    .first<{ userId: string; membershipId: string; profileId: number; eventId: string }>();
-  if (existingBootstrap) return;
+    .first<{
+      userId: string;
+      membershipId: string;
+      profileId: number;
+      eventId: string;
+      eventType: string;
+      eventRole: string;
+      eventStatus: string;
+      eventActorKind: string;
+    }>();
+  if (existingBootstrap) {
+    if (existingBootstrap.eventType !== 'created'
+      || existingBootstrap.eventRole !== 'owner'
+      || existingBootstrap.eventStatus !== 'active'
+      || existingBootstrap.eventActorKind !== 'bootstrap_migration') {
+      throw new Error('AuthorizationBootstrapIntegrityInvalid');
+    }
+    return;
+  }
 
   const partial = await d1.prepare(`SELECT
       (SELECT COUNT(*) FROM identity_users WHERE id = ?) AS userCount,

@@ -118,8 +118,13 @@ export const ROUTE_AUTHORIZATION_MANIFEST: readonly RouteAuthorizationEntry[] = 
 ] as const;
 
 export const NON_ROUTE_EXECUTION_BOUNDARIES = [
-  { source: 'vite.config.ts', name: 'local_analysis_bridge', boundary: 'human_protected' },
-  { source: 'worker/index.ts', name: 'scheduled', boundary: 'system_only' },
-  { source: 'worker/index.ts', name: 'fetch', boundary: 'framework_router' },
+  {
+    source: 'worker/index.ts', name: 'scheduled', boundary: 'system_only',
+    evidence: 'async scheduled(controller, env)',
+  },
+  {
+    source: 'worker/index.ts', name: 'fetch', boundary: 'framework_router',
+    evidence: 'fetch(request, env, ctx)',
+  },
   { source: 'public/og.png', name: 'open_graph_image', boundary: 'build_static' },
 ] as const;

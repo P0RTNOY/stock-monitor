@@ -7,6 +7,7 @@ import {
   authorizationInitializationStatements,
   authorizationIntegrityStatements,
   assertAuthorizationInitializationReady,
+  assertAuthorizationIntegrityReady,
   ensureAuthorizationBootstrap,
 } from './authorization-initialization.ts';
 import { authConfigurationFromEnv, type AuthEnvironmentBindings } from '@/app/lib/server/auth/config.ts';
@@ -95,6 +96,7 @@ async function initializeDatabase() {
     ...authorizationInitializationStatements().map((statement) => d1.prepare(statement)),
     ...authorizationIntegrityStatements().map((statement) => d1.prepare(statement)),
   ]);
+  await assertAuthorizationIntegrityReady(d1);
 
   const eventTable = await d1.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'forecast_events'")
     .first<{ sql: string }>();

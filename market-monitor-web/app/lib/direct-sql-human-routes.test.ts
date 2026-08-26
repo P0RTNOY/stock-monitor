@@ -36,7 +36,12 @@ class SQLiteD1 {
   prepare(sql: string) { return new SQLitePrepared(this.database, sql); }
 }
 
-function owner(userId: string, membershipId: string, profileId: number): HumanPrincipal {
+function human(
+  userId: string,
+  membershipId: string,
+  profileId: number,
+  role: HumanPrincipal['role'] = 'owner',
+): HumanPrincipal {
   return {
     kind: 'human',
     userId,
@@ -44,7 +49,7 @@ function owner(userId: string, membershipId: string, profileId: number): HumanPr
     membershipId,
     membershipStatus: 'active',
     profileId,
-    role: 'owner',
+    role,
     assurance: { mechanism: 'local_bootstrap', externalIdentityLinked: false },
   };
 }
@@ -105,7 +110,11 @@ test('direct-SQL human routes isolate two profiles with overlapping symbols and 
       (204, 2, 'BONLY', 'Price above', 22, 'B alert', 1, '2026-08-26T00:00:00.000Z');
   `);
 
-  const principals = { a: owner('user-a', 'membership-a', 1), b: owner('user-b', 'membership-b', 2) };
+  const principals = {
+    a: human('user-a', 'membership-a', 1),
+    b: human('user-b', 'membership-b', 2),
+    viewer: human('viewer-a', 'viewer-membership-a', 1, 'viewer'),
+  };
   const d1 = new SQLiteD1(database) as unknown as D1Database;
   const quoteRequests: string[] = [];
   let analysisRequests = 0;
@@ -116,7 +125,7 @@ test('direct-SQL human routes isolate two profiles with overlapping symbols and 
       resource: Omit<ResourceScope, 'profileId'> = {},
     ) {
       const key = request.headers.get('X-Test-Principal');
-      const principal = key === 'a' || key === 'b' ? principals[key] : principals.a;
+      const principal = key === 'a' || key === 'b' || key === 'viewer' ? principals[key] : principals.a;
       return authorizeProfileScope(principal, action, { ...resource, profileId: principal.profileId });
     },
     async ensureDatabase() {},
@@ -198,6 +207,20 @@ test('direct-SQL human routes isolate two profiles with overlapping symbols and 
     error: 'Save this symbol as a position or watchlist item first.',
   });
   assert.equal(analysisRequests, 0, 'foreign symbol must be rejected before the analysis provider');
+
+  const viewerWorkspace = await handlers.workspaceGet(new Request(
+    'https://northstar.example/api/workspace', { headers: { 'X-Test-Principal': 'viewer' } },
+  ));
+  assert.equal(viewerWorkspace.status, 200, 'viewer retains read-only workspace access');
+  assertNoStore(viewerWorkspace);
+  const viewerAnalysis = await handlers.analysisPost(new Request('https://northstar.example/api/analysis', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Test-Principal': 'viewer' },
+    body: JSON.stringify({ symbol: 'SAME' }),
+  }));
+  assert.equal(viewerAnalysis.status, 403, 'workspace read authority must not imply analysis authority');
+  assertNoStore(viewerAnalysis);
+  assert.equal(analysisRequests, 0, 'a denied viewer must not reach the analysis provider');
 
   database.close();
 });

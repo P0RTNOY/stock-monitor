@@ -6,9 +6,10 @@ function source(relative: string) {
   return readFileSync(new URL(relative, import.meta.url), 'utf8');
 }
 
-test('notification HTTP boundary is fixed-profile, no-store, and performs no schema or provider work', () => {
+test('notification HTTP boundary is explicitly authorized, no-store, and performs no schema or provider work', () => {
   const http = source('./server/in-app-notifications/http.ts');
-  assert.match(http, /resolveCurrentProfile\(request\)/u);
+  assert.match(http, /authorizeHumanRequest\(request, action\)/u);
+  assert.doesNotMatch(http, /resolveCurrentProfile/u);
   assert.match(http, /getD1\(\)/u);
   assert.match(http, /Cache-Control', 'no-store/u);
   assert.doesNotMatch(http, /ensureDatabase|forecastRequestContext|evaluationRequestContext|fetchYahoo|evaluateWithPython/u);

@@ -111,15 +111,14 @@ class MemoryEmailRepository implements EmailRecipientRepository {
     return true;
   }
 
-  async loadCapabilityForAttempt(input: {
-    profileId: number;
+  async loadCapabilityForAttemptByLocator(input: {
     capabilityId: string;
     purpose: 'verification' | 'unsubscribe';
     attemptedAt: string;
     maximumAttempts: number;
   }) {
     const capability = this.capabilities.get(input.capabilityId);
-    if (!capability || capability.profileId !== input.profileId || capability.purpose !== input.purpose
+    if (!capability || capability.purpose !== input.purpose
       || capability.state !== 'active' || capability.attemptCount >= input.maximumAttempts) return null;
     const attempted = {
       ...capability,
@@ -256,7 +255,7 @@ test('replacement revokes old capabilities and requires new verification and con
   assert.equal(repository.capabilities.get(verification.capabilityId)?.state, 'revoked');
   assert.equal(repository.currentConsent?.recipientId, second.id);
   assert.equal(repository.currentConsent?.masterConsent, false);
-  assert.equal(await service.confirmVerification(1, verification.verificationToken), false);
+  assert.equal(await service.confirmVerification(verification.verificationToken), false);
 });
 
 test('verification tokens are hashed, bounded, single-use, and never grant consent', async () => {
@@ -268,10 +267,10 @@ test('verification tokens are hashed, bounded, single-use, and never grant conse
   assert.match(stored.tokenHash, /^[a-f0-9]{64}$/u);
   assert.doesNotMatch(JSON.stringify(stored), new RegExp(issued.verificationToken, 'u'));
   setClock('2026-08-25T06:45:00.000Z');
-  assert.equal(await service.confirmVerification(1, issued.verificationToken), true);
+  assert.equal(await service.confirmVerification(issued.verificationToken), true);
   assert.equal(repository.currentRecipient?.lifecycle, 'verified');
   assert.equal(repository.currentConsent?.masterConsent, false);
-  assert.equal(await service.confirmVerification(1, issued.verificationToken), false);
+  assert.equal(await service.confirmVerification(issued.verificationToken), false);
   assert.equal(repository.consentHistory.length, 1);
 });
 
@@ -285,7 +284,7 @@ test('enabling channel consent requires verification and preserves broader notif
   );
   const issued = await service.requestVerification(1);
   setClock('2026-08-25T06:45:00.000Z');
-  await service.confirmVerification(1, issued.verificationToken);
+  await service.confirmVerification(issued.verificationToken);
   repository.notificationPreference = {
     profileId: 1,
     schemaVersion: 'forecast-notification-preferences-1.0.0',
@@ -322,7 +321,7 @@ test('unsubscribe disables only email consent and is idempotent', async () => {
   await service.register(1, 'unsubscribe@example.com');
   const verification = await service.requestVerification(1);
   setClock('2026-08-25T06:40:00.000Z');
-  await service.confirmVerification(1, verification.verificationToken);
+  await service.confirmVerification(verification.verificationToken);
   setClock('2026-08-25T06:50:00.000Z');
   await service.enableConsent(1, ['needs_review']);
   const capability = [...repository.capabilities.values()].find((value) => value.purpose === 'unsubscribe');
@@ -337,11 +336,11 @@ test('unsubscribe disables only email consent and is idempotent', async () => {
   const preservedPreference = structuredClone(repository.notificationPreference);
   const historyBefore = repository.consentHistory.length;
   setClock('2026-08-25T07:00:00.000Z');
-  assert.equal(await service.unsubscribe(1, token), true);
+  assert.equal(await service.unsubscribe(token), true);
   assert.equal(repository.currentConsent?.masterConsent, false);
   assert.equal(repository.currentConsent?.source, 'unsubscribe');
   assert.deepEqual(repository.notificationPreference, preservedPreference);
-  assert.equal(await service.unsubscribe(1, token), false);
+  assert.equal(await service.unsubscribe(token), false);
   assert.equal(repository.consentHistory.length, historyBefore + 1);
 });
 

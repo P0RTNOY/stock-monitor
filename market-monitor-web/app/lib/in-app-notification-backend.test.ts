@@ -404,10 +404,18 @@ test('profile-scoped list/get and concurrent state changes preserve isolation an
   await baseline(service); await insertSource(db);
   await service.project({ profileId: 1, cutoff: CUTOFF, mode: 'commit' }, 1);
   const entry = (await service.list(1, { state: 'all', category: 'all', limit: 20 })).items[0];
+  const tenantAUnread = await service.unreadCount(1);
   assert.equal((await service.list(2, { state: 'all', category: 'all', limit: 20 })).items.length, 0);
+  assert.equal((await service.unreadCount(2)).unreadCount, 0);
   await assert.rejects(() => service.get(2, entry.id), (error) => (
     error instanceof InAppNotificationError && error.status === 404
   ));
+  await assert.rejects(
+    () => service.markAllRead(2, tenantAUnread.markAllReadToken),
+    (error) => error instanceof InAppNotificationError && error.status === 400,
+  );
+  assert.equal((await service.unreadCount(2)).unreadCount, 0);
+  assert.equal((await service.get(1, entry.id)).state, 'unread');
   await Promise.all([
     service.setState(1, entry.id, 'read'),
     service.setState(1, entry.id, 'unread'),

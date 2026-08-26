@@ -71,7 +71,8 @@ function fixture() {
   ); CREATE TABLE watchlist_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INTEGER NOT NULL, symbol TEXT NOT NULL,
     company_name TEXT NOT NULL, created_at TEXT NOT NULL
-  ); INSERT INTO investment_profiles VALUES (1, 'Mine', 'USD', 0, '${NOW}')`);
+  ); INSERT INTO investment_profiles VALUES (1, 'Mine', 'USD', 0, '${NOW}');
+  INSERT INTO investment_profiles VALUES (2, 'Other', 'USD', 0, '${NOW}')`);
   for (const statement of forecastInitializationStatements()) database.exec(statement);
   const d1 = new SQLiteD1(database) as unknown as D1Database;
   return {
@@ -82,19 +83,19 @@ function fixture() {
   };
 }
 
-function pendingRecipient() {
+function pendingRecipient(profileId = 1, suffix = '1') {
   return {
-    id: 'recipient_1', profileId: 1, revision: 1,
-    canonicalEmail: 'person@example.test', maskedEmail: 'p***@example.test',
+    id: `recipient_${suffix}`, profileId, revision: 1,
+    canonicalEmail: `person-${suffix}@example.test`, maskedEmail: `p***-${suffix}@example.test`,
     lifecycle: 'pending' as const, verificationRequestedAt: null,
     verifiedAt: null, revokedAt: null, suppressionState: 'none' as const,
     suppressionReason: null, suppressedAt: null, createdAt: NOW, updatedAt: NOW,
   };
 }
 
-function disabledConsent() {
+function disabledConsent(profileId = 1, recipientId = 'recipient_1', revision = 1) {
   return {
-    profileId: 1, revision: 1, recipientId: 'recipient_1',
+    profileId, revision, recipientId,
     schemaVersion: 'forecast-email-consent-1.0.0' as const,
     masterConsent: false,
     categories: { target_hit: false, invalidated: false, expired: false, needs_review: false },
@@ -128,8 +129,8 @@ async function seedPendingRecipient() {
 
 test('D1 recipient persistence keeps capability consent bindings and single-use verification atomic', async () => {
   const runtime = await seedPendingRecipient();
-  const loaded = await runtime.recipient.loadCapabilityForAttempt({
-    profileId: 1, capabilityId: 'capability_1', purpose: 'verification',
+  const loaded = await runtime.recipient.loadCapabilityForAttemptByLocator({
+    capabilityId: 'capability_1', purpose: 'verification',
     attemptedAt: '2026-08-25T12:01:00.000Z', maximumAttempts: 5,
   });
   assert.equal(loaded?.consentRevision, null);
@@ -145,6 +146,58 @@ test('D1 recipient persistence keeps capability consent bindings and single-use 
   const state = await runtime.recipient.readRecipientState(1);
   assert.equal(state.currentRecipient?.lifecycle, 'verified');
   assert.equal(state.currentConsent?.masterConsent, false);
+});
+
+test('recipient and consent state and mutations remain isolated between profiles', async () => {
+  const runtime = fixture();
+  assert.equal(await runtime.recipient.replaceRecipient({
+    profileId: 1, expectedRecipientId: null, expectedConsentRevision: 0,
+    recipient: pendingRecipient(1, '1'), disabledConsent: disabledConsent(1, 'recipient_1'),
+  }), true);
+  assert.equal(await runtime.recipient.replaceRecipient({
+    profileId: 2, expectedRecipientId: null, expectedConsentRevision: 0,
+    recipient: pendingRecipient(2, '2'), disabledConsent: disabledConsent(2, 'recipient_2'),
+  }), true);
+  assert.equal(await runtime.recipient.storeVerificationCapability({
+    profileId: 1, expectedRecipientId: 'recipient_1', requestedAt: NOW,
+    capability: verificationCapability(),
+  }), true);
+
+  const initialA = await runtime.recipient.readRecipientState(1);
+  const initialB = await runtime.recipient.readRecipientState(2);
+  assert.equal(initialA.currentRecipient?.id, 'recipient_1');
+  assert.equal(initialA.currentConsent?.recipientId, 'recipient_1');
+  assert.equal(initialB.currentRecipient?.id, 'recipient_2');
+  assert.equal(initialB.currentConsent?.recipientId, 'recipient_2');
+
+  assert.equal(await runtime.recipient.consumeVerification({
+    profileId: 2, recipientId: 'recipient_1', capabilityId: 'capability_1',
+    tokenHash: HASH, confirmedAt: '2026-08-25T12:01:00.000Z',
+  }), false);
+  assert.equal((await runtime.recipient.readRecipientState(1)).currentRecipient?.lifecycle, 'pending');
+  assert.equal((await runtime.recipient.readRecipientState(2)).currentRecipient?.lifecycle, 'pending');
+
+  assert.equal(await runtime.recipient.consumeVerification({
+    profileId: 1, recipientId: 'recipient_1', capabilityId: 'capability_1',
+    tokenHash: HASH, confirmedAt: '2026-08-25T12:02:00.000Z',
+  }), true);
+  assert.equal(await runtime.recipient.revokeRecipient({
+    profileId: 1, expectedRecipientId: 'recipient_1', expectedConsentRevision: 1,
+    revokedAt: '2026-08-25T12:03:00.000Z',
+    disabledConsent: disabledConsent(1, 'recipient_1', 2),
+  }), true);
+
+  const mutatedA = await runtime.recipient.readRecipientState(1);
+  const untouchedB = await runtime.recipient.readRecipientState(2);
+  assert.equal(mutatedA.currentRecipient, null);
+  assert.equal(mutatedA.currentConsent?.revision, 2);
+  assert.equal(mutatedA.currentConsent?.masterConsent, false);
+  assert.equal(untouchedB.currentRecipient?.id, 'recipient_2');
+  assert.equal(untouchedB.currentRecipient?.lifecycle, 'pending');
+  assert.equal(untouchedB.currentConsent?.revision, 1);
+  assert.equal(untouchedB.currentConsent?.recipientId, 'recipient_2');
+  assert.equal(untouchedB.currentConsent?.masterConsent, false);
+  runtime.database.close();
 });
 
 test('verification provider crash is ambiguous without an illegal next-attempt timestamp and reuses identity', async () => {

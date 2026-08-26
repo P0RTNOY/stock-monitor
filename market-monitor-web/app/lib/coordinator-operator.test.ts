@@ -98,7 +98,13 @@ test('operator parser rejects missing, duplicate, unknown, profile, and malforme
 
 test('human and JSON renderers preserve the same failures, counts, cursors, and warnings', () => {
   const value = report();
-  assert.deepEqual(JSON.parse(renderJsonReport(value)), value);
+  const json = renderJsonReport(value);
+  assert.doesNotMatch(json, /profileId/u);
+  assert.deepEqual(JSON.parse(json), {
+    ...Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'profileId' && key !== 'items')),
+    items: value.items.map((item) =>
+      Object.fromEntries(Object.entries(item).filter(([key]) => key !== 'profileId'))),
+  });
   const human = renderHumanReport(value);
   for (const expected of [
     'completed_with_errors', 'selected=2', 'attempted=2', 'mutated=0', 'unexpected=1',
@@ -121,7 +127,8 @@ test('operator command returns zero for item-level failures and non-zero for inv
     io,
     async () => report(),
   ), 0);
-  assert.deepEqual(JSON.parse(output.at(-1) ?? '{}'), report());
+  assert.equal(output.at(-1), renderJsonReport(report()));
+  assert.doesNotMatch(output.at(-1) ?? '', /profileId/u);
   assert.equal(await runOperator(
     ['--cutoff', cutoff, '--mode', 'execute'],
     io,

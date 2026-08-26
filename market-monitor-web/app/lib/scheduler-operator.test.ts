@@ -33,7 +33,7 @@ function simulation(): ScheduledInvocationReport {
 
 function status(): SchedulerStatusReport {
   return {
-    state: 'inspection_ready', profileId: 1, localSchema: 'present', remoteMigrationState: 'unknown',
+    state: 'inspection_ready', localSchema: 'present', remoteMigrationState: 'unknown',
     remoteCronState: 'unknown', invocations: [{
       id: 'schedule_invocation_1', schedulerVersion: 'forecast-scheduler-1.0.0',
       coordinatorVersion: 'forecast-coordinator-1.0.0', environment: 'local',

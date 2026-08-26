@@ -434,6 +434,100 @@ test('D1 repository SQL atomically records one activation event and one immutabl
   database.close();
 });
 
+test('D1 forecast operations isolate a foreign profile without mutating rows, events, or snapshots', async () => {
+  const database = new DatabaseSync(':memory:');
+  database.exec('PRAGMA foreign_keys = ON');
+  createProfileTable(database);
+  database.exec(`CREATE TABLE positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INTEGER NOT NULL, symbol TEXT NOT NULL,
+    company_name TEXT NOT NULL, shares REAL NOT NULL, average_cost REAL NOT NULL, created_at TEXT NOT NULL
+  )`);
+  database.exec(`CREATE TABLE watchlist_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INTEGER NOT NULL, symbol TEXT NOT NULL,
+    company_name TEXT NOT NULL, created_at TEXT NOT NULL
+  )`);
+  for (const statement of forecastInitializationStatements()) database.exec(statement);
+  database.exec(`INSERT INTO investment_profiles VALUES
+    (1, 'Owner', 'USD', 0, '2026-01-01T00:00:00Z'),
+    (2, 'Foreign', 'USD', 0, '2026-01-01T00:00:00Z')`);
+  database.exec(`INSERT INTO positions (profile_id, symbol, company_name, shares, average_cost, created_at)
+    VALUES (1, 'NVDA', 'NVIDIA', 1, 100, '2026-01-01T00:00:00Z')`);
+
+  const repository = new D1ForecastRepository(new SQLiteD1(database) as unknown as D1Database);
+  let quoteCalls = 0;
+  const forecasts = new ForecastService(repository, async () => {
+    quoteCalls += 1;
+    return {
+      price: 175,
+      currency: 'USD',
+      provider: 'yahoo-finance',
+      providerAsOf: '2026-08-24T09:59:00Z',
+    };
+  }, () => NOW);
+  const foreignDraft = await forecasts.createDraft(1, draft({ confidence: 71 }));
+  const foreignActiveDraft = await forecasts.createDraft(1, {
+    ...draft({ confidence: 72 }),
+    analysisSeed: { report: report(), scenarioId: 'rectangle-1' },
+  });
+  const foreignActive = await forecasts.activate(1, foreignActiveDraft.id, {});
+  assert.equal(quoteCalls, 1);
+
+  const persistedState = () => ({
+    forecasts: database.prepare('SELECT * FROM forecasts ORDER BY id').all(),
+    events: database.prepare('SELECT * FROM forecast_events ORDER BY id').all(),
+    snapshots: database.prepare('SELECT * FROM analysis_snapshots ORDER BY id').all(),
+  });
+  const expectForeignNotFound = async (operation: () => Promise<unknown>) => {
+    await assert.rejects(operation, (error: unknown) => error instanceof ForecastServiceError
+      && error.code === 'not_found'
+      && error.status === 404);
+  };
+  const attempts: Array<{ name: string; run: () => Promise<void> }> = [
+    {
+      name: 'list',
+      run: async () => assert.deepEqual(await forecasts.list(2, {}), []),
+    },
+    {
+      name: 'get',
+      run: () => expectForeignNotFound(() => forecasts.get(2, foreignDraft.id)),
+    },
+    {
+      name: 'update',
+      run: () => expectForeignNotFound(() => forecasts.updateDraft(2, foreignDraft.id, draft({ confidence: 90 }))),
+    },
+    {
+      name: 'delete',
+      run: () => expectForeignNotFound(() => forecasts.deleteDraft(2, foreignDraft.id)),
+    },
+    {
+      name: 'activate',
+      run: () => expectForeignNotFound(() => forecasts.activate(2, foreignDraft.id, {})),
+    },
+    {
+      name: 'cancel',
+      run: () => expectForeignNotFound(() => forecasts.cancel(2, foreignActive.id, { reason: 'Foreign cancellation attempt.' })),
+    },
+    {
+      name: 'note',
+      run: () => expectForeignNotFound(() => forecasts.addNote(2, foreignActive.id, {
+        kind: 'review_note',
+        note: 'Foreign note attempt.',
+      })),
+    },
+  ];
+
+  for (const attempt of attempts) {
+    const before = persistedState();
+    await attempt.run();
+    assert.deepEqual(persistedState(), before, `${attempt.name} changed foreign forecast persistence`);
+  }
+  assert.equal(quoteCalls, 1, 'foreign activation must be rejected before requesting market data');
+  assert.equal((await repository.get(1, foreignDraft.id))?.status, 'draft');
+  assert.equal((await repository.get(1, foreignActive.id))?.status, 'active');
+  assert.equal((await repository.get(1, foreignActive.id))?.analysisSnapshot?.scenarioId, 'rectangle-1');
+  database.close();
+});
+
 test('activation quote adapter bypasses cache and keeps provider price and timestamp coherent', async () => {
   const originalFetch = globalThis.fetch;
   let captured: (RequestInit & { cf?: { cacheTtl?: number } }) | undefined;

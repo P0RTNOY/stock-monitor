@@ -390,6 +390,110 @@ test('replay is idempotent, database uniqueness is authoritative, and profiles a
   db.close();
 });
 
+test('each profile projection uses only its own conflicting notification preference revision', async () => {
+  const db = database();
+  const { projector, repository } = services(db);
+  const preferenceService = new NotificationPreferenceService(repository);
+  await establishBaseline(projector, 1);
+  await establishBaseline(projector, 2);
+
+  await preferenceService.update({
+    trustedProfileId: 1,
+    expectedRevision: 0,
+    snapshot: preference({
+      profileId: 1,
+      categories: { ...preference().categories, target_hit: false },
+    }),
+    changeSource: 'operator',
+    changeReason: 'profile one initially disables target alerts',
+  });
+  await preferenceService.update({
+    trustedProfileId: 1,
+    expectedRevision: 1,
+    snapshot: preference({
+      profileId: 1,
+      revision: 2,
+      categories: { ...preference().categories, target_hit: true },
+      updatedAt: '2026-08-25T06:31:00.000Z',
+    }),
+    changeSource: 'operator',
+    changeReason: 'profile one enables target alerts',
+  });
+  await preferenceService.update({
+    trustedProfileId: 2,
+    expectedRevision: 0,
+    snapshot: preference({ profileId: 2 }),
+    changeSource: 'operator',
+    changeReason: 'profile two initially enables target alerts',
+  });
+  await preferenceService.update({
+    trustedProfileId: 2,
+    expectedRevision: 1,
+    snapshot: preference({
+      profileId: 2,
+      revision: 2,
+      categories: { ...preference().categories, target_hit: false },
+      updatedAt: '2026-08-25T06:31:00.000Z',
+    }),
+    changeSource: 'operator',
+    changeReason: 'profile two disables target alerts',
+  });
+
+  const profileOneSource = insertSource(db, {
+    profileId: 1,
+    kind: 'target_hit',
+    createdAt: '2026-08-25T06:32:00.000Z',
+  });
+  const profileTwoSource = insertSource(db, {
+    profileId: 2,
+    kind: 'target_hit',
+    createdAt: '2026-08-25T06:32:00.000Z',
+  });
+
+  const profileOne = await projector.project(projection('commit', { profileId: 1 }), 1);
+  const profileTwo = await projector.project(projection('commit', { profileId: 2 }), 2);
+  assert.deepEqual(profileOne.items.map((item) => ({
+    evaluationRunId: item.evaluationRunId,
+    category: item.category,
+    policyDecision: item.policyDecision,
+  })), [{
+    evaluationRunId: profileOneSource.evaluationRunId,
+    category: 'target_hit',
+    policyDecision: 'eligible',
+  }]);
+  assert.deepEqual(profileTwo.items.map((item) => ({
+    evaluationRunId: item.evaluationRunId,
+    category: item.category,
+    policyDecision: item.policyDecision,
+  })), [{
+    evaluationRunId: profileTwoSource.evaluationRunId,
+    category: 'target_hit',
+    policyDecision: 'suppressed_category_disabled',
+  }]);
+  assert.deepEqual(db.prepare(`SELECT profile_id AS profileId,
+      preference_revision AS preferenceRevision, decision, reason_code AS reasonCode
+    FROM forecast_notification_policy_decisions ORDER BY profile_id`).all().map((row) => ({ ...row })), [
+    {
+      profileId: 1,
+      preferenceRevision: 2,
+      decision: 'eligible',
+      reasonCode: 'consent_and_category_policy_allow_notification',
+    },
+    {
+      profileId: 2,
+      preferenceRevision: 2,
+      decision: 'suppressed_category_disabled',
+      reasonCode: 'notification_category_is_disabled',
+    },
+  ]);
+  assert.deepEqual(db.prepare(`SELECT profile_id AS profileId, state
+    FROM forecast_notification_outbox ORDER BY profile_id`).all().map((row) => ({ ...row })), [
+    { profileId: 1, state: 'pending' },
+    { profileId: 2, state: 'suppressed' },
+  ]);
+  db.close();
+});
+
 test('a live projection lease rejects overlap and materializes the source once', async () => {
   const db = database();
   const runtime = new Runtime();
